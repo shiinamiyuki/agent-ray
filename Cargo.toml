@@ -7,8 +7,15 @@ edition = "2024"
 glam = "0.32.0"
 rand = "0.10.0"
 rayon = "1.11.0"
+image = "0.25.5"
+tobj = "4.0.3"
+anyhow = "1.0.102"
 
 
 [profile.dev]
 opt-level = 2
 incremental = true
+
+[[bin]]
+name = "render_test"
+path = "bin/render_test.rs"

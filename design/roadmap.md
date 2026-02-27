@@ -1,7 +1,7 @@
 # Roadmap
 Agent Ray is a CPU-based ray tracing renderer written in Rust. 
 - [x] Implement basic geometric primitives like Ray, AABB, Sphere, Triangle, etc.
-- [ ] Implement a two-level SAH BVH for efficient ray tracing.
+- [x] Implement a two-level SAH BVH for efficient ray tracing.
 - [ ] Implement various BSDF models for material representation.
     - [ ] Lambertian
     - [ ] Microfacet (GGX)
@@ -24,6 +24,7 @@ Agent Ray is a CPU-based ray tracing renderer written in Rust.
     - [ ] Area light
     - [ ] Environment light
 - [ ] Implement a scene loader that can parse common 3D file formats (e.g. OBJ, glTF) and construct the scene graph.
+    - [x] Initial TriangleMesh struct and basic OBJ loader using `tobj`.
 - [ ] Implement a blender plugin to directly render Blender scenes.
     - [ ] Exporting core renderer API like scene building in C FFI.
     - [ ] Write a python script that load the cdylib and use the API to pass blender scene data to the renderer.

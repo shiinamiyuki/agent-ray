@@ -1,4 +1,4 @@
-use glam::{Vec3A};
+use glam::{Mat4, Vec3A};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Ray {
@@ -35,11 +35,52 @@ impl AABB {
         Self { min, max }
     }
 
+    /// An empty (inverted-infinite) AABB that acts as an identity for `union`.
+    pub fn empty() -> Self {
+        Self {
+            min: Vec3A::splat(f32::INFINITY),
+            max: Vec3A::splat(f32::NEG_INFINITY),
+        }
+    }
+
     pub fn union(&self, other: &Self) -> Self {
         Self {
             min: self.min.min(other.min),
             max: self.max.max(other.max),
         }
+    }
+
+    /// Surface area of the bounding box — used by the SAH cost function.
+    pub fn surface_area(&self) -> f32 {
+        let d = (self.max - self.min).max(Vec3A::ZERO);
+        2.0 * (d.x * d.y + d.y * d.z + d.z * d.x)
+    }
+
+    /// Geometric center of the bounding box.
+    pub fn centroid(&self) -> Vec3A {
+        (self.min + self.max) * 0.5
+    }
+
+    /// Transform the AABB by a 4×4 matrix, returning the world-space AABB of
+    /// all 8 transformed corners.
+    pub fn transform(&self, m: &Mat4) -> Self {
+        let corners = [
+            Vec3A::new(self.min.x, self.min.y, self.min.z),
+            Vec3A::new(self.max.x, self.min.y, self.min.z),
+            Vec3A::new(self.min.x, self.max.y, self.min.z),
+            Vec3A::new(self.max.x, self.max.y, self.min.z),
+            Vec3A::new(self.min.x, self.min.y, self.max.z),
+            Vec3A::new(self.max.x, self.min.y, self.max.z),
+            Vec3A::new(self.min.x, self.max.y, self.max.z),
+            Vec3A::new(self.max.x, self.max.y, self.max.z),
+        ];
+        let mut result = AABB::empty();
+        for c in corners {
+            let tc = m.transform_point3a(c);
+            result.min = result.min.min(tc);
+            result.max = result.max.max(tc);
+        }
+        result
     }
 
     pub fn intersect(&self, ray: &Ray) -> bool {

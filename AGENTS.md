@@ -9,6 +9,8 @@ When you have finished the current session, please update the roadmap (if ncessa
 [Brief summary of accomplishments and progress made during the session]
 ```
 
+You can update the roadmap by checking off completed items and adding new items if necessary. 
+
 ## Building and Running
 Just use `cargo build` to build the project. The `dev` profile has incremental build and optimizations enabled, so you should almost never need to use the `release` profile.
 

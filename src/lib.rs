@@ -4,3 +4,10 @@ pub mod prelude {
 pub mod geometry;
 pub mod utils;
 pub mod cameras;
+pub mod primitives {
+    pub mod mesh;
+}
+
+pub mod accel {
+    pub mod bvh;
+}
