@@ -1,0 +1,30 @@
+# Roadmap
+Agent Ray is a CPU-based ray tracing renderer written in Rust. 
+- [ ] Implement basic geometric primitives like Ray, AABB, Sphere, Triangle, etc.
+- [ ] Implement a two-level SAH BVH for efficient ray tracing.
+- [ ] Implement various BSDF models for material representation.
+    - [ ] Lambertian
+    - [ ] Microfacet (GGX)
+    - [ ] OpenPBR
+- [ ] Implement programmable shader graphs for flexible material definitions.
+    - [ ] A Python API for building shader graphs. It should use a tracing based approach to assemble the shader graph, similar to how PyTorch builds its computation graph.
+    - [ ] Implement a virtual machine to execute the shader graph on CPU.
+- [ ] Implement various integrators for rendering, including path tracing and photon mapping.
+    - [ ] Path tracer with Multiple Importance Sampling (MIS).
+    - [ ] Photon mapper for global illumination.
+    - [ ] Volumetric path tracer for participating media.
+    - [ ] Bidirectional path tracer for improved convergence.
+- [ ] Implement various camera models for scene rendering.
+    - [ ] Perspective camera
+    - [ ] Orthographic camera
+    - [ ] Spherical camera
+- [ ] Implement various light sources for scene illumination.
+    - [ ] Point light
+    - [ ] Directional light
+    - [ ] Area light
+    - [ ] Environment light
+- [ ] Implement a scene loader that can parse common 3D file formats (e.g. OBJ, glTF) and construct the scene graph.
+- [ ] Implement a blender plugin to directly render Blender scenes.
+    - [ ] Exporting core renderer API like scene building in C FFI.
+    - [ ] Write a python script that load the cdylib and use the API to pass blender scene data to the renderer.
+- [ ] Implement a command-line interface for rendering scenes with various options and parameters.
