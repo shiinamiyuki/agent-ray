@@ -1,6 +1,6 @@
 # Roadmap
 Agent Ray is a CPU-based ray tracing renderer written in Rust. 
-- [ ] Implement basic geometric primitives like Ray, AABB, Sphere, Triangle, etc.
+- [x] Implement basic geometric primitives like Ray, AABB, Sphere, Triangle, etc.
 - [ ] Implement a two-level SAH BVH for efficient ray tracing.
 - [ ] Implement various BSDF models for material representation.
     - [ ] Lambertian
@@ -14,8 +14,8 @@ Agent Ray is a CPU-based ray tracing renderer written in Rust.
     - [ ] Photon mapper for global illumination.
     - [ ] Volumetric path tracer for participating media.
     - [ ] Bidirectional path tracer for improved convergence.
-- [ ] Implement various camera models for scene rendering.
-    - [ ] Perspective camera
+- [x] Implement various camera models for scene rendering.
+    - [x] Perspective camera (Pinhole)
     - [ ] Orthographic camera
     - [ ] Spherical camera
 - [ ] Implement various light sources for scene illumination.
