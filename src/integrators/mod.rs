@@ -3,7 +3,9 @@ use crate::cameras::Camera;
 use crate::scene::Scene;
 
 pub mod path_tracer;
+pub mod bidirectional_path_tracer;
 pub use path_tracer::{PathTracer, PathTracerConfig};
+pub use bidirectional_path_tracer::{BidirectionalPathTracer, BdptConfig};
 
 /// Common interface for all rendering integrators.
 ///

@@ -23,3 +23,7 @@ path = "bin/render_test.rs"
 [[bin]]
 name = "pt_test"
 path = "bin/pt_test.rs"
+
+[[bin]]
+name = "bdpt_test"
+path = "bin/bdpt_test.rs"

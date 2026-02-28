@@ -12,7 +12,7 @@ fn main() {
     let height = 600;
     let aspect_ratio = width as f32 / height as f32;
 
-    let camera = PinholeCamera::new(
+    let camera = PinholeCamera::from_lookat(
         Vec3A::new(10.0, 10.0, 30.0),
         Vec3A::new(0.0, 5.0, 0.0),
         Vec3A::new(0.0, 1.0, 0.0),

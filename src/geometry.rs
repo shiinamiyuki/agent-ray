@@ -207,6 +207,7 @@ impl Intersect for Triangle {
 }
 
 /// Orthonormal basis for transforming between world and local coordinates.
+#[derive(Clone, Copy, Debug)]
 pub struct Onb {
     pub normal: Vec3A,
     pub tangent: Vec3A,

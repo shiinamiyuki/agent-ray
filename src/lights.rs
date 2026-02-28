@@ -1,6 +1,8 @@
 use glam::{Vec2, Vec3A};
 use std::sync::Arc;
 
+use crate::geometry::Ray;
+
 pub mod point;
 pub use point::PointLight;
 
@@ -24,7 +26,37 @@ pub struct LightSample {
     pub pdf: f32,
 }
 
+/// Result of sampling an emitted ray from a light source.
+///
+/// Used by the bidirectional path tracer to build light subpaths.
+pub struct EmissionSample {
+    /// The emitted ray (origin = light position, direction = emission direction).
+    pub ray: Ray,
+    /// Emitted radiance `Le` along the ray.  For isotropic sources this is
+    /// `intensity`; for area lights it includes the cosine foreshortening.
+    pub le: Vec3A,
+    /// PDF of the positional component.  For delta-position lights (e.g. point)
+    /// this is nominally 1.0 — the caller must handle the delta specially.
+    pub pdf_pos: f32,
+    /// PDF of the directional component in solid-angle measure.
+    pub pdf_dir: f32,
+    /// Surface normal at the light emission point.  For point lights this is
+    /// chosen as the emission direction itself (no surface).
+    pub n_light: Vec3A,
+}
+
 /// Common interface for all light sources.
+///
+/// The base methods (`sample`, `power`, `is_delta`) support unidirectional
+/// path tracing.  The additional `sample_emission` / `pdf_emission_dir` /
+/// `is_positional_delta` methods are used by the bidirectional path tracer
+/// to trace subpaths starting *from* the light.
+///
+/// **Adding a new light type:**  
+/// 1. Implement at least `sample`, `power`, and `is_delta`.  
+/// 2. For BDPT support, implement `sample_emission` and `pdf_emission_dir`.  
+///    Default implementations return `None` / `0.0`, which causes the BDPT
+///    to gracefully skip light-subpath strategies for that light.
 pub trait Light: Send + Sync {
     /// Sample a direction toward the light as seen from `ref_point`.  
     /// `u` is a 2-D uniform random variable in [0,1)².  
@@ -40,6 +72,34 @@ pub trait Light: Send + Sync {
     /// Delta lights cannot contribute via BSDF-driven path continuation, so
     /// integrators should skip MIS for them.
     fn is_delta(&self) -> bool;
+
+    // -------------------------------------------------------------------
+    // BDPT emission interface (optional — default = unsupported)
+    // -------------------------------------------------------------------
+
+    /// Sample an emitted ray from the light.  Used by the BDPT to start light
+    /// subpaths.  `u_pos` selects a position on the light surface (unused for
+    /// point lights); `u_dir` selects a direction.
+    ///
+    /// Returns `None` if the light does not support emission sampling.
+    fn sample_emission(&self, _u_pos: Vec2, _u_dir: Vec2) -> Option<EmissionSample> {
+        None
+    }
+
+    /// Directional PDF (in solid-angle measure) for the emission direction.
+    /// This is the pdf of the direction chosen by `sample_emission`.
+    ///
+    /// Returns `0.0` by default (emission sampling not supported).
+    fn pdf_emission_dir(&self, _dir: Vec3A) -> f32 {
+        0.0
+    }
+
+    /// Whether the light's *positional* component is a delta distribution.
+    /// True for point lights and directional lights; false for area lights.
+    /// Defaults to `is_delta()`.
+    fn is_positional_delta(&self) -> bool {
+        self.is_delta()
+    }
 }
 
 // ---------------------------------------------------------------------------
