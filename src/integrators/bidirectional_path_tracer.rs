@@ -79,6 +79,25 @@ use crate::surfaces::Bsdf;
 // Configuration
 // ===========================================================================
 
+/// Strategy for computing MIS weights.
+///
+/// Selecting `Uniform` disables proper MIS and instead gives every valid
+/// strategy an equal weight of `1 / n_strategies`.  This is intentionally
+/// *wrong* for production use — it exists **only** as a debugging tool so
+/// that energy-conservation issues can be attributed to either
+/// (a) the per-strategy contribution evaluation, or
+/// (b) the MIS weight function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MisMode {
+    /// Power heuristic: `w = p_i^β / Σ p_j^β`.  β is controlled via
+    /// `BdptConfig::mis_beta`.
+    Power,
+    /// Uniform: every strategy that can reach the path gets weight
+    /// `1 / n_strategies`.  Useful for sanity-checking unweighted
+    /// contributions.
+    Uniform,
+}
+
 /// Configuration parameters for the bidirectional path tracer.
 pub struct BdptConfig {
     /// Samples per pixel.
@@ -88,6 +107,16 @@ pub struct BdptConfig {
     pub max_depth: u32,
     /// Minimum subpath depth before Russian roulette kicks in.
     pub rr_depth: u32,
+    /// MIS weighting strategy (default: `Power`).
+    pub mis_mode: MisMode,
+    /// Exponent for the power heuristic.  The classic choice is β = 2
+    /// (Veach's default).  Only meaningful when `mis_mode == Power`.
+    pub mis_beta: f32,
+    /// When `true`, dump a separate PNG for every `(s, t)` strategy in
+    /// addition to the combined output.  Files are named
+    /// `bdpt_s{s}_t{t}.png`.  Extremely useful for diagnosing which
+    /// strategy contributes the excess energy.
+    pub debug_strategy_images: bool,
 }
 
 impl Default for BdptConfig {
@@ -96,6 +125,9 @@ impl Default for BdptConfig {
             spp: 64,
             max_depth: 8,
             rr_depth: 3,
+            mis_mode: MisMode::Power,
+            mis_beta: 2.0,
+            debug_strategy_images: false,
         }
     }
 }
@@ -339,12 +371,8 @@ fn generate_camera_subpath(
         };
 
         // Area-measure PDF of this vertex from the previous one.
-        let pdf_fwd_area = pdf_solid_angle_to_area(
-            prev_pdf_dir,
-            vertices.last().unwrap().p,
-            hit.p,
-            hit.n,
-        );
+        let pdf_fwd_area =
+            pdf_solid_angle_to_area(prev_pdf_dir, vertices.last().unwrap().p, hit.p, hit.n);
 
         let v = PathVertex::surface(
             hit.p,
@@ -376,21 +404,19 @@ fn generate_camera_subpath(
         // Store the directional PDF for the *next* vertex's pdf_fwd.
         prev_pdf_dir = bs.pdf;
 
-        // Also compute the *reverse* directional PDF at this vertex: the
+        // Compute the *reverse* directional PDF at this vertex: the
         // PDF of sampling `wo` given `wi` (the direction we'd trace if
-        // going backward along the path).
+        // going backward along the path).  This gives us p^←(x_{j-1}),
+        // the area-measure reverse PDF of the *previous* vertex — so we
+        // store it at `vertices[prev_idx]`, NOT at the current vertex.
+        // (This matches the PBRT convention where creating v[j]
+        // retroactively sets v[j-1].pdfRev.)
         let pdf_rev_dir = hit.bsdf.pdf(wo_local, bs.wi);
-        // Convert reverse PDF from solid angle to area at the *previous*
-        // vertex.
         let prev_idx = vertices.len() - 2;
         let prev_p = vertices[prev_idx].p;
         let prev_n = vertices[prev_idx].n;
-        vertices.last_mut().unwrap().pdf_rev = pdf_solid_angle_to_area(
-            pdf_rev_dir,
-            hit.p,
-            prev_p,
-            prev_n,
-        );
+        vertices[prev_idx].pdf_rev =
+            pdf_solid_angle_to_area(pdf_rev_dir, hit.p, prev_p, prev_n);
 
         // Russian roulette.
         if depth + 1 >= rr_depth {
@@ -474,12 +500,8 @@ fn generate_light_subpath(
             break;
         };
 
-        let pdf_fwd_area = pdf_solid_angle_to_area(
-            prev_pdf_dir,
-            vertices.last().unwrap().p,
-            hit.p,
-            hit.n,
-        );
+        let pdf_fwd_area =
+            pdf_solid_angle_to_area(prev_pdf_dir, vertices.last().unwrap().p, hit.p, hit.n);
 
         let v = PathVertex::surface(
             hit.p,
@@ -510,17 +532,14 @@ fn generate_light_subpath(
 
         prev_pdf_dir = bs.pdf;
 
-        // Reverse PDF at this vertex.
+        // Reverse PDF: p^←(x_{j-1}).  Store at the *previous* vertex
+        // (same convention as the camera subpath — see comment there).
         let pdf_rev_dir = hit.bsdf.pdf(wo_local, bs.wi);
         let prev_idx = vertices.len() - 2;
         let prev_p = vertices[prev_idx].p;
         let prev_n = vertices[prev_idx].n;
-        vertices.last_mut().unwrap().pdf_rev = pdf_solid_angle_to_area(
-            pdf_rev_dir,
-            hit.p,
-            prev_p,
-            prev_n,
-        );
+        vertices[prev_idx].pdf_rev =
+            pdf_solid_angle_to_area(pdf_rev_dir, hit.p, prev_p, prev_n);
 
         // Russian roulette.
         if depth + 1 >= rr_depth {
@@ -544,7 +563,7 @@ fn generate_light_subpath(
 // ===========================================================================
 
 /// Compute the MIS weight for strategy `(s, t)` using the **power heuristic**
-/// (β = 2) via Veach's recursive ratio method.
+/// (β configurable) via Veach's recursive ratio method.
 ///
 /// ## Arguments
 ///
@@ -557,13 +576,15 @@ fn generate_light_subpath(
 ///   reverse PDF at z[s-1] obtained by tracing from the light side).
 /// - `pdf_connect_light`: similarly, the reverse PDF at y[t-1] obtained by
 ///   tracing from the camera side.
+/// - `mis_mode`: which weighting scheme to use.
+/// - `beta`: exponent for the power heuristic (ignored for `Uniform`).
 ///
 /// ## Algorithm
 ///
 /// For strategy `(s, t)`, the MIS weight is:
 ///
 /// ```text
-/// w_{s,t} = 1 / (1 + Σ_{i≠(s,t)} (p_i / p_{s,t})²)
+/// w_{s,t} = 1 / (1 + Σ_{i≠(s,t)} (p_i / p_{s,t})^β)
 /// ```
 ///
 /// The ratio `(p_i / p_{s,t})` is computed as a running product of
@@ -577,83 +598,118 @@ fn mis_weight(
     t: usize,
     pdf_connect_cam: f32,
     pdf_connect_light: f32,
+    mis_mode: MisMode,
+    beta: f32,
 ) -> f32 {
-    // Trivial cases: if only one strategy is possible, weight = 1.
-    if s + t == 2 {
-        return 1.0;
+    match mis_mode {
+        MisMode::Uniform => {
+            // Count the number of valid (non-delta) strategies for this
+            // path length.  This is an approximation — we count every
+            // (s', t') with s'+t' == s+t and 2 ≤ s'+t' that has non-delta
+            // connection endpoints.
+            //
+            // For a quick-and-dirty debug mode we just count every (s',t')
+            // combination that `connect_bdpt` / `connect_bdpt_s1` would
+            // attempt (ignoring visibility and zero-BSDF).  This is a
+            // *conservative upper bound* on the number of strategies for
+            // the given path length.
+            let path_len = s + t;
+            let n_cam = camera_verts.len();
+            let n_light = light_verts.len();
+            let mut count = 0u32;
+            for t2 in 0..=path_len.min(n_light) {
+                let s2 = path_len - t2;
+                if s2 > n_cam || s2 + t2 < 2 {
+                    continue;
+                }
+                // Skip s=0 (not implemented).
+                if s2 == 0 {
+                    continue;
+                }
+                count += 1;
+            }
+            if count == 0 {
+                1.0
+            } else {
+                1.0 / count as f32
+            }
+        }
+        MisMode::Power => {
+            // Trivial cases: if only one strategy is possible, weight = 1.
+            if s + t == 2 {
+                return 1.0;
+            }
+
+            let mut sum_ri = 0.0f64;
+
+            // -- Walk along the camera subpath (from z[s-1] toward z[0]) ---
+            {
+                let mut ri = 1.0f64;
+
+                if s >= 1 {
+                    let v = &camera_verts[s - 1];
+                    let rev = pdf_connect_cam as f64;
+                    let fwd = v.pdf_fwd.max(1e-30) as f64;
+                    ri *= rev / fwd;
+
+                    if !v.is_delta && (s < 2 || !camera_verts[s - 2].is_delta) {
+                        sum_ri += ri.abs().powf(beta as f64);
+                    }
+                }
+
+                for i in (1..s).rev() {
+                    let v = &camera_verts[i];
+                    let rev = v.pdf_rev.max(0.0) as f64;
+                    let fwd = v.pdf_fwd.max(1e-30) as f64;
+                    ri *= rev / fwd;
+
+                    let prev_delta = if i > 0 {
+                        camera_verts[i - 1].is_delta
+                    } else {
+                        false
+                    };
+                    if !v.is_delta && !prev_delta {
+                        sum_ri += ri.abs().powf(beta as f64);
+                    }
+                }
+            }
+
+            // -- Walk along the light subpath (from y[t-1] toward y[0]) ----
+            {
+                let mut ri = 1.0f64;
+
+                if t >= 1 {
+                    let v = &light_verts[t - 1];
+                    let rev = pdf_connect_light as f64;
+                    let fwd = v.pdf_fwd.max(1e-30) as f64;
+                    ri *= rev / fwd;
+
+                    if !v.is_delta && (t < 2 || !light_verts[t - 2].is_delta) {
+                        sum_ri += ri.abs().powf(beta as f64);
+                    }
+                }
+
+                for i in (1..t).rev() {
+                    let v = &light_verts[i];
+                    let rev = v.pdf_rev.max(0.0) as f64;
+                    let fwd = v.pdf_fwd.max(1e-30) as f64;
+                    ri *= rev / fwd;
+
+                    let prev_delta = if i > 0 {
+                        light_verts[i - 1].is_delta
+                    } else {
+                        false
+                    };
+                    if !v.is_delta && !prev_delta {
+                        sum_ri += ri.abs().powf(beta as f64);
+                    }
+                }
+            }
+
+            // MIS weight: w = 1 / (1 + sum).
+            (1.0 / (1.0 + sum_ri)) as f32
+        }
     }
-
-    let mut sum_ri_sq = 0.0f64;
-
-    // -- Walk along the camera subpath (from z[s-1] toward z[0]) -----------
-    //
-    // For index i (counting from the connection), the ratio is:
-    //   r_i = Π_{j=s-1..s-i} (pdf_rev[j] / pdf_fwd[j])
-    //
-    // If we shift the connection by one position toward the camera, the vertex
-    // that used to be on the camera side becomes the connection vertex from
-    // the light side.  Its "new" pdf_fwd is the reverse PDF we just computed
-    // during connection (`pdf_connect_cam`), and vice versa.
-    {
-        let mut ri = 1.0f64;
-
-        // At z[s-1]: the "new" forward PDF is pdf_connect_cam (what the
-        // light side would compute), and the existing forward is pdf_fwd.
-        if s >= 1 {
-            let v = &camera_verts[s - 1];
-            let rev = pdf_connect_cam as f64;
-            let fwd = v.pdf_fwd.max(1e-30) as f64;
-            ri *= rev / fwd;
-
-            if !v.is_delta && (s < 2 || !camera_verts[s - 2].is_delta) {
-                sum_ri_sq += ri * ri;
-            }
-        }
-
-        // Walk further toward z[0].
-        for i in (1..s).rev() {
-            let v = &camera_verts[i];
-            let rev = v.pdf_rev.max(0.0) as f64;
-            let fwd = v.pdf_fwd.max(1e-30) as f64;
-            ri *= rev / fwd;
-
-            let prev_delta = if i > 0 { camera_verts[i - 1].is_delta } else { false };
-            if !v.is_delta && !prev_delta {
-                sum_ri_sq += ri * ri;
-            }
-        }
-    }
-
-    // -- Walk along the light subpath (from y[t-1] toward y[0]) ------------
-    {
-        let mut ri = 1.0f64;
-
-        if t >= 1 {
-            let v = &light_verts[t - 1];
-            let rev = pdf_connect_light as f64;
-            let fwd = v.pdf_fwd.max(1e-30) as f64;
-            ri *= rev / fwd;
-
-            if !v.is_delta && (t < 2 || !light_verts[t - 2].is_delta) {
-                sum_ri_sq += ri * ri;
-            }
-        }
-
-        for i in (1..t).rev() {
-            let v = &light_verts[i];
-            let rev = v.pdf_rev.max(0.0) as f64;
-            let fwd = v.pdf_fwd.max(1e-30) as f64;
-            ri *= rev / fwd;
-
-            let prev_delta = if i > 0 { light_verts[i - 1].is_delta } else { false };
-            if !v.is_delta && !prev_delta {
-                sum_ri_sq += ri * ri;
-            }
-        }
-    }
-
-    // MIS weight (power heuristic): w = 1 / (1 + sum).
-    (1.0 / (1.0 + sum_ri_sq)) as f32
 }
 
 // ===========================================================================
@@ -673,6 +729,8 @@ fn connect_bdpt(
     light_verts: &[PathVertex],
     s: usize,
     t: usize,
+    mis_mode: MisMode,
+    mis_beta: f32,
 ) -> Option<(Vec3A, f32, f32)> {
     // -----------------------------------------------------------------------
     // Validate & short-circuit degenerate cases
@@ -916,6 +974,8 @@ fn connect_bdpt(
         t,
         pdf_connect_cam,
         pdf_connect_light,
+        mis_mode,
+        mis_beta,
     );
 
     // For t == 1 with delta lights, the NEE is the only strategy that can
@@ -939,6 +999,8 @@ fn connect_bdpt_s1(
     t: usize,
     width: usize,
     height: usize,
+    mis_mode: MisMode,
+    mis_beta: f32,
 ) -> Option<(Vec3A, f32, f32)> {
     if t < 2 || light_verts.len() < t {
         return None;
@@ -956,12 +1018,7 @@ fn connect_bdpt_s1(
     let to_cam = cam_sample.wi;
     let dist = cam_sample.dist;
     let offset = y.n * 1e-4 * to_cam.dot(y.n).signum();
-    let shadow_ray = Ray::new(
-        y.p + offset,
-        to_cam,
-        0.0,
-        dist * (1.0 - 1e-4),
-    );
+    let shadow_ray = Ray::new(y.p + offset, to_cam, 0.0, dist * (1.0 - 1e-4));
     if scene.occluded(&shadow_ray) {
         return None;
     }
@@ -1029,6 +1086,8 @@ fn connect_bdpt_s1(
         t,
         pdf_connect_cam,
         pdf_connect_light,
+        mis_mode,
+        mis_beta,
     );
 
     Some((
@@ -1054,6 +1113,56 @@ impl BidirectionalPathTracer {
     pub fn new(config: BdptConfig) -> Self {
         Self { config }
     }
+
+    /// Write one PNG per `(s, t)` strategy that had non-zero contributions.
+    fn dump_strategy_images(
+        strat_bufs: &[Vec<std::sync::Mutex<Vec3A>>],
+        stride: usize,
+        n_strats: usize,
+        width: usize,
+        height: usize,
+        spp: u32,
+    ) {
+        let inv_spp = 1.0 / spp as f32;
+        for si in 0..n_strats {
+            let s = si / stride;
+            let t = si % stride;
+            let buf = &strat_bufs[si];
+            // Check if any pixel is non-zero.
+            let any_nonzero = buf.iter().any(|m| {
+                let v = m.lock().unwrap();
+                *v != Vec3A::ZERO
+            });
+            if !any_nonzero {
+                continue;
+            }
+            // Build a flat image buffer and save.
+            let mut img_buf = image::RgbImage::new(width as u32, height as u32);
+            for y_row in 0..height {
+                for x_col in 0..width {
+                    let idx = y_row * width + x_col;
+                    let v = *buf[idx].lock().unwrap() * inv_spp;
+                    // Simple Reinhard tonemapping + gamma.
+                    let tone = |c: f32| -> u8 {
+                        let c = c.max(0.0);
+                        let mapped = c / (1.0 + c);
+                        (mapped.powf(1.0 / 2.2) * 255.0).min(255.0) as u8
+                    };
+                    img_buf.put_pixel(
+                        x_col as u32,
+                        y_row as u32,
+                        image::Rgb([tone(v.x), tone(v.y), tone(v.z)]),
+                    );
+                }
+            }
+            let path = format!("bdpt_s{}_t{}.png", s, t);
+            if let Err(e) = img_buf.save(&path) {
+                eprintln!("Failed to save {}: {}", path, e);
+            } else {
+                println!("Saved strategy image: {}", path);
+            }
+        }
+    }
 }
 
 impl Integrator for BidirectionalPathTracer {
@@ -1069,6 +1178,11 @@ impl Integrator for BidirectionalPathTracer {
     ///    accumulate the result.
     /// 4. The `s = 1` strategy (light tracing) splatted contributions are
     ///    accumulated into a separate buffer and merged at the end.
+    ///
+    /// When `debug_strategy_images` is enabled, every strategy `(s, t)` also
+    /// accumulates into its own image buffer so that the caller can inspect
+    /// the per-strategy contribution.  After rendering, those images are
+    /// written to `bdpt_s{s}_t{t}.png` in the working directory.
     fn render(
         &self,
         scene: &Scene,
@@ -1079,17 +1193,30 @@ impl Integrator for BidirectionalPathTracer {
         let spp = self.config.spp;
         let max_depth = self.config.max_depth;
         let rr_depth = self.config.rr_depth;
+        let mis_mode = self.config.mis_mode;
+        let mis_beta = self.config.mis_beta;
+        let debug_strat = self.config.debug_strategy_images;
         let n_pixels = width * height;
+
+        // The maximum strategy index we can encounter: s, t each in
+        // [0, max_depth + 1].  We flatten (s, t) → s * stride + t.
+        let stride = max_depth as usize + 2; // t can be 0..=max_depth+1
+        let n_strats = stride * stride;
 
         // Primary accumulation buffer (per-pixel, filled by s ≥ 2 strategies).
         let mut pixels = vec![Vec3A::ZERO; n_pixels];
 
-        // Splat buffer for the s=1 (light tracing) strategy.  This is
-        // accumulated with atomic-like semantics by collecting per-row
-        // splat lists, then merging after the parallel loop.
-        //
-        // We use a Vec<Mutex<Vec3A>> for thread-safe splatting.
+        // Per-strategy accumulation buffers (only allocated when debugging).
         use std::sync::Mutex;
+        let strat_bufs: Vec<Vec<Mutex<Vec3A>>> = if debug_strat {
+            (0..n_strats)
+                .map(|_| (0..n_pixels).map(|_| Mutex::new(Vec3A::ZERO)).collect())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Splat buffer for the s=1 (light tracing) strategy.
         let splat_buf: Vec<Mutex<Vec3A>> =
             (0..n_pixels).map(|_| Mutex::new(Vec3A::ZERO)).collect();
 
@@ -1104,6 +1231,7 @@ impl Integrator for BidirectionalPathTracer {
                     let mut rng = SmallRng::seed_from_u64(seed);
 
                     let mut accum = Vec3A::ZERO;
+                    let pix_idx = y_row * width + x_col;
 
                     for _ in 0..spp {
                         // -- Generate camera ray (jittered sub-pixel) ------
@@ -1117,27 +1245,19 @@ impl Integrator for BidirectionalPathTracer {
                         let cam_path = generate_camera_subpath(
                             scene, camera, ray, max_depth, rr_depth, &mut rng,
                         );
-                        let light_path = generate_light_subpath(
-                            scene, max_depth, rr_depth, &mut rng,
-                        );
+                        let light_path =
+                            generate_light_subpath(scene, max_depth, rr_depth, &mut rng);
 
                         let s_max = cam_path.len();
                         let t_max = light_path.len();
 
                         // -- Enumerate all (s, t) strategies ---------------
-                        //
-                        // Path length k = s + t - 1 (number of edges).
-                        // We need s ≥ 1, t ≥ 0, s + t ≥ 2.
                         for t in 0..=t_max {
                             for s in 0..=s_max {
                                 if s + t < 2 {
                                     continue;
                                 }
-
                                 if s == 0 {
-                                    // s=0: pure light tracing — not yet
-                                    // implemented (requires camera We for
-                                    // arbitrary direction).
                                     continue;
                                 }
 
@@ -1151,27 +1271,45 @@ impl Integrator for BidirectionalPathTracer {
                                         t,
                                         width,
                                         height,
+                                        mis_mode,
+                                        mis_beta,
                                     ) {
-                                        // Splat to the target pixel.
                                         let ix = (px as usize).min(width - 1);
                                         let iy = (py as usize).min(height - 1);
                                         let idx = iy * width + ix;
-                                        let mut s = splat_buf[idx].lock().unwrap();
-                                        *s += c;
+                                        {
+                                            let mut sp =
+                                                splat_buf[idx].lock().unwrap();
+                                            *sp += c;
+                                        }
+                                        if debug_strat {
+                                            let si = 1 * stride + t;
+                                            if si < n_strats {
+                                                let mut sp = strat_bufs[si][idx]
+                                                    .lock()
+                                                    .unwrap();
+                                                *sp += c;
+                                            }
+                                        }
                                     }
                                     continue;
                                 }
 
                                 // s ≥ 2, t ≥ 0: general / NEE / t=0.
                                 if let Some((c, _, _)) = connect_bdpt(
-                                    scene,
-                                    camera,
-                                    &cam_path,
-                                    &light_path,
-                                    s,
-                                    t,
+                                    scene, camera, &cam_path, &light_path, s, t,
+                                    mis_mode, mis_beta,
                                 ) {
                                     accum += c;
+                                    if debug_strat {
+                                        let si = s * stride + t;
+                                        if si < n_strats {
+                                            let mut sp = strat_bufs[si][pix_idx]
+                                                .lock()
+                                                .unwrap();
+                                            *sp += c;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1190,24 +1328,11 @@ impl Integrator for BidirectionalPathTracer {
             }
         }
 
+        // -- Dump per-strategy images (debug mode) -------------------------
+        if debug_strat {
+            Self::dump_strategy_images(&strat_bufs, stride, n_strats, width, height, spp);
+        }
+
         pixels
     }
-}
-
-// ===========================================================================
-// Utilities
-// ===========================================================================
-
-/// Power heuristic (β = 2) for two PDFs.
-///
-/// `w(p_a, p_b) = p_a² / (p_a² + p_b²)`
-#[allow(dead_code)]
-#[inline]
-fn power_heuristic(pdf_a: f32, pdf_b: f32) -> f32 {
-    let a2 = pdf_a * pdf_a;
-    let b2 = pdf_b * pdf_b;
-    if a2 + b2 == 0.0 {
-        return 0.0;
-    }
-    a2 / (a2 + b2)
 }

@@ -1,6 +1,6 @@
 use agent_ray::cameras::PinholeCamera;
 use agent_ray::importer::load_obj_scene;
-use agent_ray::integrators::{BdptConfig, BidirectionalPathTracer, Integrator};
+use agent_ray::integrators::{BdptConfig, BidirectionalPathTracer, Integrator, MisMode};
 use agent_ray::lights::{PointLight, PowerLightDistribution};
 use agent_ray::scene::Scene;
 use agent_ray::utils::save_image_as_png;
@@ -66,9 +66,12 @@ fn main() {
     let scene = Scene::new(objects, lights, Some(light_dist));
 
     let config = BdptConfig {
-        spp: 1,
+        spp: 16,
         max_depth: 8,
         rr_depth: 3,
+        mis_mode: MisMode::Power,
+        mis_beta: 1.0,
+        debug_strategy_images: true,
     };
     let integrator = BidirectionalPathTracer::new(config);
 

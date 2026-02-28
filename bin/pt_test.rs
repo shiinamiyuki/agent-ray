@@ -82,7 +82,7 @@ fn main() {
     let scene = Scene::new(objects, lights, Some(light_dist));
 
     let config = PathTracerConfig {
-        spp: 1,
+        spp: 16,
         max_depth: 8,
         rr_depth: 3,
     };

@@ -122,3 +122,41 @@ Implemented a full two-level BVH acceleration structure in `src/accel/bvh.rs`:
 - **`BLASAccel`**: wraps an `Arc<dyn BLASPrimitive>` with a BVH; exposes `build`, `aabb`, and `intersect`.
 - **`Instance`** / **`TLAS`**: TLAS is a BVH over instances; each instance carries a local-to-world `Mat4`. Ray–instance intersection transforms the ray into local space (accounting for the direction-length scale factor so world t-values remain correct).
 - Added `AABB::empty()`, `AABB::surface_area()`, `AABB::centroid()`, and `AABB::transform(Mat4)` to `src/geometry.rs`.
+
+## 2026-02-28 - Bidirectional Path Tracer
+Implemented a full bidirectional path tracer with MIS in `src/integrators/bidirectional_path_tracer.rs`.
+
+**Design:**
+- Builds two subpaths per sample: one from the camera, one from a randomly chosen light.
+- Enumerates all `(s, t)` connection strategies and weights them via the **power heuristic** (β=2) using Veach's recursive ratio formulation.
+- All PDFs are converted to **area measure** so strategies with different vertex counts are directly comparable.
+- Delta distributions (point lights, specular BSDFs, pinhole camera) are handled by zeroing their MIS contribution.
+
+**Supported strategies:**
+- `s ≥ 2, t = 1`: NEE (next-event estimation) — direct light sampling, equivalent to the unidirectional PT.
+- `s = 1, t ≥ 2`: Light tracing — splatted to the image via `Camera::sample_we`.
+- `s ≥ 2, t ≥ 2`: General connection through two surface vertices.
+- `t = 0` and `s = 0`: Documented as TODOs (require area-light emission / full camera We).
+
+**Trait extensions for BDPT:**
+- `Light` trait: added `sample_emission`, `pdf_emission_dir`, `is_positional_delta` with default no-op implementations so existing lights still compile.
+- `PointLight`: implements `sample_emission` (uniform sphere sampling) and `pdf_emission_dir`.
+- `Camera` trait: added `sample_we`, `pdf_we`, `film_area`, `origin` with default no-op implementations.
+- `PinholeCamera`: implements `sample_we` (image-plane projection with `We = 1/(A·cos⁴θ)`) and `pdf_we`.
+- `Onb`: added `Clone + Copy` derive.
+
+**Extensibility:** any new `Bsdf`, `Light`, or `Camera` implementation works automatically; BDPT-specific light/camera methods have sensible defaults that gracefully disable unsupported strategies.
+
+**Test:** `bin/bdpt_test.rs` renders the fireplace room scene and produces `bdpt_test.png`. Visually verified correct at 1spp.
+
+## 2026-02-28 - BDPT Debugging & MIS Fix
+
+**Debugging infrastructure added:**
+- `MisMode` enum: `Power` (β configurable) and `Uniform` (equal weight per strategy, for sanity-checking).
+- `BdptConfig` extended with `mis_mode`, `mis_beta`, `debug_strategy_images` fields.
+- Per-strategy image dump: when `debug_strategy_images = true`, writes `bdpt_s{s}_t{t}.png` for every active strategy.
+
+**Bug found and fixed — off-by-one in `pdf_rev` storage:**
+- Root cause: in both `generate_camera_subpath` and `generate_light_subpath`, the reverse area-measure PDF computed at vertex `z[j]` (representing $p^\leftarrow(x_{j-1})$) was stored at `vertices.last_mut()` (= `z[j]`) instead of `vertices[prev_idx]` (= `z[j-1]`).
+- This meant `z[i].pdf_rev` held $p^\leftarrow(x_{i-1})$ instead of $p^\leftarrow(x_i)$, causing the MIS weight walk to use wrong ratios, under-counting the denominator $\sum r_i$, and over-weighting every strategy → brighter image.
+- Fix: store at `vertices[prev_idx].pdf_rev` (matching the PBRT convention where creating `v[j]` retroactively sets `v[j-1].pdfRev`).
