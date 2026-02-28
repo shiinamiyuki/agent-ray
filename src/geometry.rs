@@ -205,3 +205,40 @@ impl Intersect for Triangle {
         })
     }
 }
+
+/// Orthonormal basis for transforming between world and local coordinates.
+pub struct Onb {
+    pub normal: Vec3A,
+    pub tangent: Vec3A,
+    pub bitangent: Vec3A,
+}
+
+impl Onb {
+    pub fn from_normal(n: Vec3A) -> Self {
+        let normal = n.normalize();
+        let a = if normal.x.abs() > 0.9 {
+            Vec3A::new(0.0, 1.0, 0.0)
+        } else {
+            Vec3A::new(1.0, 0.0, 0.0)
+        };
+        let bitangent = normal.cross(a).normalize();
+        let tangent = bitangent.cross(normal);
+        Self {
+            normal,
+            tangent,
+            bitangent,
+        }
+    }
+
+    pub fn to_local(&self, v: Vec3A) -> Vec3A {
+        Vec3A::new(
+            v.dot(self.tangent),
+            v.dot(self.bitangent),
+            v.dot(self.normal),
+        )
+    }
+
+    pub fn to_world(&self, v: Vec3A) -> Vec3A {
+        self.tangent * v.x + self.bitangent * v.y + self.normal * v.z
+    }
+}

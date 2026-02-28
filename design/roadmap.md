@@ -3,8 +3,8 @@ Agent Ray is a CPU-based ray tracing renderer written in Rust.
 - [x] Implement basic geometric primitives like Ray, AABB, Sphere, Triangle, etc.
 - [x] Implement a two-level SAH BVH for efficient ray tracing.
 - [ ] Implement various BSDF models for material representation.
-    - [ ] Lambertian
-    - [ ] Microfacet (GGX)
+    - [x] Lambertian
+    - [x] Microfacet (GGX) — conductor + dielectric
     - [ ] OpenPBR
 - [ ] Implement programmable shader graphs for flexible material definitions.
     - [ ] A Python API for building shader graphs. It should use a tracing based approach to assemble the shader graph, similar to how PyTorch builds its computation graph.

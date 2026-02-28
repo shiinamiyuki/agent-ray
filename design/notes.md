@@ -26,6 +26,26 @@ Implemented parallel execution helpers in `src/utils.rs` using `rayon`:
 - Integrated `tobj` for loading triangle meshes from OBJ files.
 - Added `primitives` and `mesh` modules to [src/lib.rs](src/lib.rs).
 
+## 2026-02-27 - BSDF Implementation
+Refactored `src/surfaces.rs` into a module with common utilities and added two BSDF implementations in `src/surfaces/`:
+
+- **Common utilities in `surfaces.rs`**:
+  - `Bsdf` trait (now `Send + Sync`) and `BsdfSample` struct.
+  - `SurfaceClosure` that converts world↔local via `Onb` (also fixed a pre-existing bug where `eval` was calling `to_world` instead of `to_local`).
+  - Local-space trig helpers: `cos_theta`, `abs_cos_theta`, `sin2_theta`, `tan2_theta`, `same_hemisphere`.
+  - Sampling helpers: `cosine_hemisphere_sample`, `concentric_disk_sample`.
+  - Fresnel functions: `fresnel_schlick` (Schlick approximation) and `fresnel_dielectric` (exact polarised).
+  - Geometric optics: `reflect` and `refract` helpers.
+
+- **`surfaces/lambertian.rs`** — `Lambertian` BSDF:
+  - Diffuse BSDF: `f = albedo / π`.
+  - Cosine-weighted hemisphere importance sampling: `pdf = |cos θᵢ| / π`.
+
+- **`surfaces/microfacet.rs`** — GGX microfacet BSDFs:
+  - Shared GGX helpers: isotropic NDF (`ggx_d`), Smith Λ (`ggx_lambda`), height-correlated G2 (`ggx_g2`), NDF sampling (`ggx_sample_wh`).
+  - `ConductorBsdf`: Cook-Torrance model (D·G2·F_Schlick) for opaque metals. Samples by reflecting off a GGX-distributed micro-normal.
+  - `DielectricBsdf`: Cook-Torrance model for glass/dielectrics. Probabilistically selects the reflective or transmissive lobe using the Fresnel weight, with correct radiometric correction for the transmissive term.
+
 ## 2026-02-27 - Two-Level SAH BVH
 Implemented a full two-level BVH acceleration structure in `src/accel/bvh.rs`:
 - **SAH builder** (`sah_split`): shared between BLAS and TLAS; performs a forward-backward AABB prefix/suffix scan on all three axes to test every exact split point, picks the axis+position with the lowest SAH cost, and only splits when the cost beats a pure leaf.

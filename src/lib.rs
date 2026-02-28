@@ -11,3 +11,4 @@ pub mod primitives {
 pub mod accel {
     pub mod bvh;
 }
+pub mod surfaces;

@@ -22,7 +22,7 @@ Just use `cargo build` to build the project. The `dev` profile has incremental b
     - `src/geometry.rs`: defines geometric primitives and operations.
     - `src/accel/`: an two-level SAH BVH implementation for efficient ray tracing.
     - `src/primitives/`: defines various primitives such as meshes, voxels and procedural shapes.
-    - `src/bsdf/`: defines various BSDF models for material representation.
+    - `src/surfaces/`: defines various BSDF models for material representation.
     - `src/integrators/`: defines various integrators for rendering, including path tracing and photon mapping.
         - `src/integrators/path_tracer.rs`: implements a MIS path tracer.
         - `src/integrators/photon_mapper.rs`: implements a photon mapper for global illumination.
