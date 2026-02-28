@@ -11,4 +11,9 @@ pub mod primitives {
 pub mod accel {
     pub mod bvh;
 }
+pub mod texture;
 pub mod surfaces;
+pub mod lights;
+pub mod scene;
+pub mod integrators;
+pub mod importer;

@@ -19,9 +19,12 @@ pub struct BsdfSample {
 
 /// All `eval`/`sample`/`pdf` methods operate in **local space** where the
 /// shading normal is the +Z axis.
+///
+/// `uv` carries the interpolated texture coordinates at the shading point so
+/// that texture-mapped parameters (e.g. albedo) can be looked up per call.
 pub trait Bsdf: Send + Sync {
-    fn eval(&self, wi: Vec3A, wo: Vec3A) -> Vec3A;
-    fn sample(&self, wo: Vec3A, u_sel: f32, u_dir: Vec2) -> Option<BsdfSample>;
+    fn eval(&self, wi: Vec3A, wo: Vec3A, uv: Vec2) -> Vec3A;
+    fn sample(&self, wo: Vec3A, uv: Vec2, u_sel: f32, u_dir: Vec2) -> Option<BsdfSample>;
     fn pdf(&self, wi: Vec3A, wo: Vec3A) -> f32;
 }
 
@@ -136,17 +139,17 @@ impl SurfaceClosure {
     }
 
     /// Evaluate the BSDF. `wi` and `wo` are in **world space**.
-    pub fn eval(&self, wi: Vec3A, wo: Vec3A) -> Vec3A {
+    pub fn eval(&self, wi: Vec3A, wo: Vec3A, uv: Vec2) -> Vec3A {
         let wi_local = self.onb.to_local(wi);
         let wo_local = self.onb.to_local(wo);
-        self.bsdf.eval(wi_local, wo_local)
+        self.bsdf.eval(wi_local, wo_local, uv)
     }
 
     /// Sample the BSDF. `wo` is in **world space**; the returned `wi` is also
     /// in world space.
-    pub fn sample(&self, wo: Vec3A, u_sel: f32, u_dir: Vec2) -> Option<BsdfSample> {
+    pub fn sample(&self, wo: Vec3A, uv: Vec2, u_sel: f32, u_dir: Vec2) -> Option<BsdfSample> {
         let wo_local = self.onb.to_local(wo);
-        let mut sample = self.bsdf.sample(wo_local, u_sel, u_dir)?;
+        let mut sample = self.bsdf.sample(wo_local, uv, u_sel, u_dir)?;
         sample.wi = self.onb.to_world(sample.wi);
         Some(sample)
     }

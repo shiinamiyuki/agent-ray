@@ -100,7 +100,7 @@ impl ConductorBsdf {
 }
 
 impl Bsdf for ConductorBsdf {
-    fn eval(&self, wi: Vec3A, wo: Vec3A) -> Vec3A {
+    fn eval(&self, wi: Vec3A, wo: Vec3A, _uv: Vec2) -> Vec3A {
         if !same_hemisphere(wi, wo) {
             return Vec3A::ZERO;
         }
@@ -118,7 +118,7 @@ impl Bsdf for ConductorBsdf {
         f * (d * g / (4.0 * cos_wi * cos_wo))
     }
 
-    fn sample(&self, wo: Vec3A, _u_sel: f32, u_dir: Vec2) -> Option<BsdfSample> {
+    fn sample(&self, wo: Vec3A, uv: Vec2, _u_sel: f32, u_dir: Vec2) -> Option<BsdfSample> {
         if wo.z == 0.0 {
             return None;
         }
@@ -134,7 +134,7 @@ impl Bsdf for ConductorBsdf {
         Some(BsdfSample {
             wi,
             pdf,
-            f: self.eval(wi, wo),
+            f: self.eval(wi, wo, uv),
         })
     }
 
@@ -182,7 +182,7 @@ impl DielectricBsdf {
 }
 
 impl Bsdf for DielectricBsdf {
-    fn eval(&self, wi: Vec3A, wo: Vec3A) -> Vec3A {
+    fn eval(&self, wi: Vec3A, wo: Vec3A, _uv: Vec2) -> Vec3A {
         let reflect_side = same_hemisphere(wi, wo);
         let cos_wo = abs_cos_theta(wo);
         let cos_wi = abs_cos_theta(wi);
@@ -228,7 +228,7 @@ impl Bsdf for DielectricBsdf {
         }
     }
 
-    fn sample(&self, wo: Vec3A, u_sel: f32, u_dir: Vec2) -> Option<BsdfSample> {
+    fn sample(&self, wo: Vec3A, uv: Vec2, u_sel: f32, u_dir: Vec2) -> Option<BsdfSample> {
         if wo.z == 0.0 {
             return None;
         }
@@ -248,7 +248,7 @@ impl Bsdf for DielectricBsdf {
             Some(BsdfSample {
                 wi,
                 pdf,
-                f: self.eval(wi, wo),
+                f: self.eval(wi, wo, uv),
             })
         } else {
             // --- sample refraction ---
@@ -264,7 +264,7 @@ impl Bsdf for DielectricBsdf {
             Some(BsdfSample {
                 wi,
                 pdf,
-                f: self.eval(wi, wo),
+                f: self.eval(wi, wo, uv),
             })
         }
     }

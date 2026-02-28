@@ -1,8 +1,8 @@
+use crate::accel::bvh::{BLASPrimitive, RayHit};
+use crate::geometry::{AABB, Intersect, Ray, Triangle};
+use anyhow::Result;
 use glam::{Vec2, Vec3A, Vec4};
 use std::path::Path;
-use anyhow::Result;
-use crate::geometry::{AABB, Ray, Triangle, Intersect};
-use crate::accel::bvh::{BLASPrimitive, RayHit};
 
 pub struct TriangleMesh {
     pub positions: Vec<Vec3A>,
@@ -10,40 +10,44 @@ pub struct TriangleMesh {
     pub tex_coords: Option<Vec<Vec2>>,
     pub tangents: Option<Vec<Vec4>>,
     pub indices: Vec<u32>,
+
+    /// if len = 1, then all triangles use the same material slot. Otherwise, each triangle uses the corresponding slot.
     pub material_slots: Vec<u32>,
 }
 
 impl TriangleMesh {
     pub fn load_obj(path: &Path) -> Result<Vec<Self>> {
-        let (models, _materials) = tobj::load_obj(
-            path,
-            &tobj::GPU_LOAD_OPTIONS,
-        )?;
+        let (models, _materials) = tobj::load_obj(path, &tobj::GPU_LOAD_OPTIONS)?;
 
         let mut meshes = Vec::new();
 
         for model in models {
             let mesh = &model.mesh;
-            
-            let positions: Vec<Vec3A> = mesh.positions
+
+            let positions: Vec<Vec3A> = mesh
+                .positions
                 .chunks_exact(3)
                 .map(|p| Vec3A::new(p[0], p[1], p[2]))
                 .collect();
 
             let normals = if !mesh.normals.is_empty() {
-                Some(mesh.normals
-                    .chunks_exact(3)
-                    .map(|n| Vec3A::new(n[0], n[1], n[2]))
-                    .collect())
+                Some(
+                    mesh.normals
+                        .chunks_exact(3)
+                        .map(|n| Vec3A::new(n[0], n[1], n[2]))
+                        .collect(),
+                )
             } else {
                 None
             };
 
             let tex_coords = if !mesh.texcoords.is_empty() {
-                Some(mesh.texcoords
-                    .chunks_exact(2)
-                    .map(|t| Vec2::new(t[0], t[1]))
-                    .collect())
+                Some(
+                    mesh.texcoords
+                        .chunks_exact(2)
+                        .map(|t| Vec2::new(t[0], t[1]))
+                        .collect(),
+                )
             } else {
                 None
             };
@@ -102,14 +106,12 @@ impl BLASPrimitive for TriangleMesh {
         let mut local_ray = *ray;
         local_ray.t_max = t_max;
 
-        triangle.hit(&local_ray).map(|hit| {
-            RayHit {
-                instance_id: 0,
-                prim_id: prim_id as u32,
-                n: hit.n,
-                uv: hit.uv,
-                t: hit.t,
-            }
+        triangle.hit(&local_ray).map(|hit| RayHit {
+            instance_id: 0,
+            prim_id: prim_id as u32,
+            n: hit.n,
+            uv: hit.uv,
+            t: hit.t,
         })
     }
 }
