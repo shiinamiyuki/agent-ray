@@ -11,6 +11,7 @@ use crate::prelude::*;
 pub struct RayHit {
     pub instance_id: u32,
     pub prim_id: u32,
+    pub n: Vec3A, // Normal
     pub uv: Vec2,
     pub t: f32,
 }

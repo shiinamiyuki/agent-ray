@@ -1,6 +1,8 @@
 use glam::{Vec2, Vec3A, Vec4};
 use std::path::Path;
 use anyhow::Result;
+use crate::geometry::{AABB, Ray, Triangle, Intersect};
+use crate::accel::bvh::{BLASPrimitive, RayHit};
 
 pub struct TriangleMesh {
     pub positions: Vec<Vec3A>,
@@ -8,6 +10,7 @@ pub struct TriangleMesh {
     pub tex_coords: Option<Vec<Vec2>>,
     pub tangents: Option<Vec<Vec4>>,
     pub indices: Vec<u32>,
+    pub material_slots: Vec<u32>,
 }
 
 impl TriangleMesh {
@@ -50,6 +53,7 @@ impl TriangleMesh {
             let tangents = None;
 
             let indices = mesh.indices.clone();
+            let material_slots = vec![mesh.material_id.unwrap_or(0) as u32];
 
             meshes.push(TriangleMesh {
                 positions,
@@ -57,9 +61,55 @@ impl TriangleMesh {
                 tex_coords,
                 tangents,
                 indices,
+                material_slots,
             });
         }
 
         Ok(meshes)
+    }
+}
+
+impl BLASPrimitive for TriangleMesh {
+    fn primitive_count(&self) -> usize {
+        self.indices.len() / 3
+    }
+
+    fn primitive_aabb(&self, prim_id: usize) -> AABB {
+        let i0 = self.indices[prim_id * 3] as usize;
+        let i1 = self.indices[prim_id * 3 + 1] as usize;
+        let i2 = self.indices[prim_id * 3 + 2] as usize;
+
+        let v0 = self.positions[i0];
+        let v1 = self.positions[i1];
+        let v2 = self.positions[i2];
+
+        let min = v0.min(v1).min(v2);
+        let max = v0.max(v1).max(v2);
+
+        AABB::new(min, max)
+    }
+
+    fn intersect_primitive(&self, prim_id: usize, ray: &Ray, t_max: f32) -> Option<RayHit> {
+        let i0 = self.indices[prim_id * 3] as usize;
+        let i1 = self.indices[prim_id * 3 + 1] as usize;
+        let i2 = self.indices[prim_id * 3 + 2] as usize;
+
+        let v0 = self.positions[i0];
+        let v1 = self.positions[i1];
+        let v2 = self.positions[i2];
+
+        let triangle = Triangle::new(v0, v1, v2);
+        let mut local_ray = *ray;
+        local_ray.t_max = t_max;
+
+        triangle.hit(&local_ray).map(|hit| {
+            RayHit {
+                instance_id: 0,
+                prim_id: prim_id as u32,
+                n: hit.n,
+                uv: hit.uv,
+                t: hit.t,
+            }
+        })
     }
 }
