@@ -83,7 +83,7 @@ fn main() {
 
     let config = PathTracerConfig {
         spp: 16,
-        max_depth: 8,
+        max_depth: 2,
         rr_depth: 3,
     };
     let integrator = PathTracer::new(config);

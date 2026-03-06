@@ -67,7 +67,7 @@ fn main() {
 
     let config = BdptConfig {
         spp: 16,
-        max_depth: 8,
+        max_depth: 2,
         rr_depth: 3,
         mis_mode: MisMode::Power,
         mis_beta: 1.0,

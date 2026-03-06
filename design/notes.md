@@ -160,3 +160,17 @@ Implemented a full bidirectional path tracer with MIS in `src/integrators/bidire
 - Root cause: in both `generate_camera_subpath` and `generate_light_subpath`, the reverse area-measure PDF computed at vertex `z[j]` (representing $p^\leftarrow(x_{j-1})$) was stored at `vertices.last_mut()` (= `z[j]`) instead of `vertices[prev_idx]` (= `z[j-1]`).
 - This meant `z[i].pdf_rev` held $p^\leftarrow(x_{i-1})$ instead of $p^\leftarrow(x_i)$, causing the MIS weight walk to use wrong ratios, under-counting the denominator $\sum r_i$, and over-weighting every strategy → brighter image.
 - Fix: store at `vertices[prev_idx].pdf_rev` (matching the PBRT convention where creating `v[j]` retroactively sets `v[j-1].pdfRev`).
+
+## 2026-03-06 - BDPT Path Length Constraint Fix
+
+**Bug found and fixed — `max_depth` not limiting total path length in strategy enumeration:**
+- Root cause: the render loop enumerated all `(s, t)` combinations with `s ∈ [0, s_max]` and `t ∈ [0, t_max]` without constraining the total number of path vertices. With `max_depth=1`, each subpath could have up to 2 vertices (1 endpoint + 1 surface hit), allowing strategy `(s=2, t=2)` which produces a 4-vertex path (3 edges, 2 surface bounces) — an indirect lighting path.
+- Fix: added constraint `s + t ≤ max_depth + 2` in the strategy enumeration loop. The full path has `s + t` vertices and `s + t - 2` interior surface bounces, so this ensures the number of bounces doesn't exceed `max_depth`. For `max_depth=1`, only strategies with `s + t ≤ 3` are evaluated (direct lighting only).
+
+## 2026-03-06 - BDPT MIS Weight Delta-Endpoint Fix
+
+**Bug found and fixed — MIS weight function treating subpath-origin deltas the same as surface deltas:**
+- Root cause: the `mis_weight` power-heuristic walk used `v.is_delta` to decide whether to skip ratio terms for alternative strategies. For the pinhole camera (`z[0].is_delta = true`) and point light (`y[0].is_delta = true`), this zeroed out the ratio for strategies `(s=1, t=2)` and `(s=2, t=1)` respectively. Both strategies then received MIS weight = 1.0, effectively doubling the energy for direct-lighting paths.
+- The key insight: Camera and Light endpoint vertices have **dedicated sampling routines** (`sample_we` for camera, `Light::sample` / NEE for lights) that handle their delta nature. These strategies ARE valid and must compete in MIS. Only delta *surface* vertices (specular BSDFs) are genuinely unreachable as generic connection endpoints.
+- Fix: introduced `is_mis_delta()` helper that returns `false` for `Camera` and `Light` vertex types (their strategies exist), and `v.is_delta` only for `Surface` vertices. Also set `prev_delta = true` for `s=0` and `t=0` strategies since those are not yet implemented, correctly excluding them from the MIS sum.
+- Removed incorrect `assert!(sum_ri > 0.0)` — `sum_ri == 0` is legitimate when the only alternative strategies involve unimplemented paths (s=0, t=0).

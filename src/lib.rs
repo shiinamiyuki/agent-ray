@@ -17,3 +17,8 @@ pub mod lights;
 pub mod scene;
 pub mod integrators;
 pub mod importer;
+
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;

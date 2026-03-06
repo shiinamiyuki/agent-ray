@@ -642,7 +642,39 @@ fn mis_weight(
 
             let mut sum_ri = 0.0f64;
 
+            // Helper: determine whether a vertex is "MIS-delta" — i.e.
+            // whether strategies that use it as a connection endpoint
+            // should be excluded from the MIS sum.
+            //
+            // Subpath *origins* (Camera, Light) have dedicated sampling
+            // routines (sample_we, Light::sample) that handle their delta
+            // nature, so they are NOT treated as delta for MIS purposes.
+            // Only delta *surface* vertices (specular BSDFs) are truly
+            // unreachable as generic connection endpoints.
+            let is_mis_delta = |v: &PathVertex| -> bool {
+                match v.vtype {
+                    VertexType::Camera => false, // handled by sample_we
+                    VertexType::Light => false,  // handled by Light::sample / NEE
+                    VertexType::Surface => v.is_delta,
+                }
+            };
+
             // -- Walk along the camera subpath (from z[s-1] toward z[0]) ---
+            //
+            // Each step along the camera subpath corresponds to shifting
+            // the connection point one vertex toward the camera, i.e.
+            // strategy (s-k, t+k) for increasing k.  The ratio ri
+            // accumulates (pdf_rev / pdf_fwd) products.
+            //
+            // The first step (k=1) uses pdf_connect_cam at z[s-1] and
+            // represents strategy (s-1, t+1).  We add it to sum_ri
+            // unless either connection endpoint for that strategy is
+            // MIS-delta: the "new" camera-side endpoint is z[s-2] and
+            // the "new" light-side endpoint is z[s-1] (which becomes a
+            // light-subpath vertex in the alternative strategy).
+            //
+            // Subsequent steps (k≥2) use pdf_rev/pdf_fwd at camera_verts[i]
+            // and represent strategy (i, s+t-i).
             {
                 let mut ri = 1.0f64;
 
@@ -652,7 +684,17 @@ fn mis_weight(
                     let fwd = v.pdf_fwd.max(1e-30) as f64;
                     ri *= rev / fwd;
 
-                    if !v.is_delta && (s < 2 || !camera_verts[s - 2].is_delta) {
+                    // Strategy (s-1, t+1): connection endpoints are
+                    // z[s-2] (camera side) and z[s-1] (now light side).
+                    // Skip if either is MIS-delta.
+                    let prev_delta = if s >= 2 {
+                        is_mis_delta(&camera_verts[s - 2])
+                    } else {
+                        // s-1 == 0: the s=0 strategy (pure light tracing
+                        // to camera sensor) is not implemented, so skip.
+                        true
+                    };
+                    if !is_mis_delta(v) && !prev_delta {
                         sum_ri += ri.abs().powf(beta as f64);
                     }
                 }
@@ -664,17 +706,21 @@ fn mis_weight(
                     ri *= rev / fwd;
 
                     let prev_delta = if i > 0 {
-                        camera_verts[i - 1].is_delta
+                        is_mis_delta(&camera_verts[i - 1])
                     } else {
-                        false
+                        // i == 0 → s'=0 strategy, not implemented.
+                        true
                     };
-                    if !v.is_delta && !prev_delta {
+                    if !is_mis_delta(v) && !prev_delta {
                         sum_ri += ri.abs().powf(beta as f64);
                     }
                 }
             }
 
             // -- Walk along the light subpath (from y[t-1] toward y[0]) ----
+            //
+            // Symmetric to the camera walk but sliding the connection
+            // point toward the light.
             {
                 let mut ri = 1.0f64;
 
@@ -684,7 +730,17 @@ fn mis_weight(
                     let fwd = v.pdf_fwd.max(1e-30) as f64;
                     ri *= rev / fwd;
 
-                    if !v.is_delta && (t < 2 || !light_verts[t - 2].is_delta) {
+                    // Strategy (s+1, t-1): connection endpoints are
+                    // y[t-1] (now camera side) and y[t-2] (light side).
+                    let prev_delta = if t >= 2 {
+                        is_mis_delta(&light_verts[t - 2])
+                    } else {
+                        // t-1 == 0: the t=0 strategy (eye path hitting
+                        // an emitter) — not yet implemented for delta
+                        // lights, so skip.
+                        true
+                    };
+                    if !is_mis_delta(v) && !prev_delta {
                         sum_ri += ri.abs().powf(beta as f64);
                     }
                 }
@@ -696,11 +752,12 @@ fn mis_weight(
                     ri *= rev / fwd;
 
                     let prev_delta = if i > 0 {
-                        light_verts[i - 1].is_delta
+                        is_mis_delta(&light_verts[i - 1])
                     } else {
-                        false
+                        // t=0 strategy, not implemented.
+                        true
                     };
-                    if !v.is_delta && !prev_delta {
+                    if !is_mis_delta(v) && !prev_delta {
                         sum_ri += ri.abs().powf(beta as f64);
                     }
                 }
@@ -1252,9 +1309,17 @@ impl Integrator for BidirectionalPathTracer {
                         let t_max = light_path.len();
 
                         // -- Enumerate all (s, t) strategies ---------------
+                        // The full path has s + t vertices and s + t - 1
+                        // edges.  The number of surface bounces (interior
+                        // vertices) is s + t - 2.  We must ensure
+                        // s + t - 2 ≤ max_depth, i.e. s + t ≤ max_depth + 2.
+                        let path_len_limit = max_depth as usize + 2;
                         for t in 0..=t_max {
                             for s in 0..=s_max {
                                 if s + t < 2 {
+                                    continue;
+                                }
+                                if s + t > path_len_limit {
                                     continue;
                                 }
                                 if s == 0 {
