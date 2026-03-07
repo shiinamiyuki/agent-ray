@@ -14,6 +14,7 @@ Agent Ray is a CPU-based ray tracing renderer written in Rust.
     - [ ] Photon mapper for global illumination.
     - [ ] Volumetric path tracer for participating media.
     - [x] Bidirectional path tracer with full MIS.
+    - [x] Gradient-domain path tracer using random replay shift mapping
 - [x] Implement various camera models for scene rendering.
     - [x] Perspective camera (Pinhole)
     - [ ] Orthographic camera

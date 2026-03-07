@@ -30,3 +30,7 @@ path = "bin/pt_test.rs"
 [[bin]]
 name = "bdpt_test"
 path = "bin/bdpt_test.rs"
+
+[[bin]]
+name = "gdpt_test"
+path = "bin/gdpt_test.rs"

@@ -224,3 +224,24 @@ Added `Film::save_exr(path, scale)` for writing linear HDR framebuffers as compr
 - Added `exr` and `smallvec` as direct dependencies in `Cargo.toml`.
 - Integrated into `pt_test.rs` — now saves both `pt_test.png` and `pt_test.exr`.
 - Compression reduces file size by ~2.6× vs uncompressed (13 MB → 5 MB for 1600×720).
+
+## 2026-03-07 - Gradient-Domain Path Tracer
+
+Implemented a gradient-domain path tracer (G-PT) using random replay shift mapping.
+
+**New files:**
+- `src/integrators/gradient_domain_pt.rs` — full G-PT integrator with:
+  - `GdptConfig`: spp, max_depth, rr_depth, screening weight α, Poisson iteration count, SOR ω.
+  - `ReplaySampler`: wraps `IndependentSampler` with a record/replay tape mechanism. In record mode, every `next_1d()` call is logged; in replay mode, the tape is played back identically so that offset paths share the same random decisions as the base path.
+  - `trace_with_gradients()`: traces one base path and two offset paths (x+1, y+1) per sample using the replay sampler, computing forward-difference gradients ΔIx = I(x+1,y) − I(x,y) and ΔIy = I(x,y+1) − I(x,y).
+  - Screened Poisson reconstruction via SOR: solves argmin_I α‖I − I_primal‖² + ‖∇I − G‖² using red-black SOR on the 5-point Laplacian stencil. Pre-computes RHS (α·primal + div G) and iterates with configurable ω and iteration count.
+- `bin/gdpt_test.rs` — test binary loading the fireplace room scene and rendering with G-PT at 16 spp.
+
+**Modified files:**
+- `src/integrators/mod.rs` — registered `gradient_domain_pt` module, exported `GradientDomainPathTracer` and `GdptConfig`.
+- `Cargo.toml` — added `gdpt_test` binary target.
+
+**Design notes:**
+- Random replay shift mapping is always invertible (no reconnection needed), making the implementation simpler than half-vector copy or manifold exploration shifts.
+- Only forward differences (x+1, y+1) are traced; backward shifts could be added later for symmetric gradient estimation at the cost of 2 additional path traces per sample.
+- The Poisson solver uses warm-start from the primal image and red-black ordering for faster convergence.
