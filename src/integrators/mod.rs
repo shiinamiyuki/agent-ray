@@ -1,5 +1,7 @@
-use glam::Vec3A;
+use std::sync::Arc;
+
 use crate::cameras::Camera;
+use crate::film::Film;
 use crate::scene::Scene;
 
 pub mod path_tracer;
@@ -9,9 +11,9 @@ pub use bidirectional_path_tracer::{BidirectionalPathTracer, BdptConfig, MisMode
 
 /// Common interface for all rendering integrators.
 ///
-/// `render` returns a linear-HDR image as a flat `Vec<Vec3A>`, row-major
-/// (`pixel[y * width + x]`).  Callers are responsible for tone-mapping and
-/// gamma-correction before display.
+/// `render` returns a [`Film`] holding the accumulated linear-HDR image.
+/// Callers can then call `film.to_rgb_image(…)` for tone-mapping and
+/// gamma-correction, or `film.to_hdr_vec()` for raw pixel data.
 pub trait Integrator {
     fn render(
         &self,
@@ -19,5 +21,5 @@ pub trait Integrator {
         camera: &dyn Camera,
         width: usize,
         height: usize,
-    ) -> Vec<Vec3A>;
+    ) -> Arc<Film>;
 }

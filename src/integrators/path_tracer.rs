@@ -1,11 +1,13 @@
-use glam::{Vec2, Vec3A};
-use rand::rngs::SmallRng;
-use rand::{RngExt, SeedableRng};
+use std::sync::Arc;
+
+use glam::Vec3A;
 use rayon::prelude::*;
 
 use crate::cameras::Camera;
+use crate::film::Film;
 use crate::geometry::Ray;
 use crate::integrators::Integrator;
+use crate::sampler::{IndependentSampler, Sampler};
 use crate::scene::Scene;
 
 // ---------------------------------------------------------------------------
@@ -54,7 +56,7 @@ impl PathTracer {
     /// 3. **Russian roulette** — paths are terminated stochastically after
     ///    `rr_depth` bounces, with survival probability = max component of
     ///    throughput (clamped to 0.95).
-    fn li(&self, scene: &Scene, initial_ray: Ray, rng: &mut SmallRng) -> Vec3A {
+    fn li(&self, scene: &Scene, initial_ray: Ray, sampler: &mut dyn Sampler) -> Vec3A {
         let mut radiance = Vec3A::ZERO;
         let mut throughput = Vec3A::ONE;
         let mut ray = initial_ray;
@@ -75,11 +77,11 @@ impl PathTracer {
             // Direct lighting — sample one light
             // ----------------------------------------------------------------
             if let Some(light_dist) = &scene.light_dist {
-                let u_sel: f32 = rng.random();
+                let u_sel: f32 = sampler.next_1d();
                 let (light_idx, sel_pmf) = light_dist.sample_index(u_sel);
                 let light = &scene.lights[light_idx];
 
-                let u_light = Vec2::new(rng.random(), rng.random());
+                let u_light = sampler.next_2d();
                 if let Some(ls) = light.sample(hit.p, u_light) {
                     // Offset origin along the shading normal in the light's
                     // half-space to avoid self-intersection.
@@ -117,8 +119,8 @@ impl PathTracer {
             // ----------------------------------------------------------------
             // Sample BSDF to extend the path
             // ----------------------------------------------------------------
-            let u_sel: f32 = rng.random();
-            let u_dir = Vec2::new(rng.random(), rng.random());
+            let u_sel: f32 = sampler.next_1d();
+            let u_dir = sampler.next_2d();
 
             let Some(bs) = hit.bsdf.sample(wo_local, hit.tex_uv, u_sel, u_dir) else {
                 break;
@@ -136,7 +138,7 @@ impl PathTracer {
             // ----------------------------------------------------------------
             if depth + 1 >= self.config.rr_depth {
                 let survival = throughput.max_element().min(0.95);
-                if rng.random::<f32>() > survival {
+                if sampler.next_1d() > survival {
                     break;
                 }
                 throughput /= survival;
@@ -161,37 +163,30 @@ impl Integrator for PathTracer {
         camera: &dyn Camera,
         width: usize,
         height: usize,
-    ) -> Vec<Vec3A> {
+    ) -> Arc<Film> {
         let spp = self.config.spp;
-        let mut pixels = vec![Vec3A::ZERO; width * height];
+        let film = Arc::new(Film::new(width, height));
 
-        // Process each row in parallel; per-pixel RNG seeded deterministically.
-        pixels
-            .par_chunks_mut(width)
-            .enumerate()
-            .for_each(|(y, row)| {
-                for x in 0..width {
-                    // Seed incorporates pixel position so each pixel gets an
-                    // independent sequence, yielding good coverage.
-                    let seed = (y as u64).wrapping_mul(2654435761)
-                        ^ (x as u64).wrapping_mul(805459861);
-                    let mut rng = SmallRng::seed_from_u64(seed);
+        // Process each row in parallel; per-pixel sampler seeded deterministically.
+        (0..height).into_par_iter().for_each(|y| {
+            for x in 0..width {
+                let mut sampler = IndependentSampler::seeded_for_pixel(x as u32, y as u32);
 
-                    let mut accum = Vec3A::ZERO;
-                    for _ in 0..spp {
-                        // Jittered sub-pixel sample.
-                        let jx: f32 = rng.random();
-                        let jy: f32 = rng.random();
-                        let u = (x as f32 + jx) / width as f32;
-                        let v = 1.0 - (y as f32 + jy) / height as f32;
-                        let ray = camera.generate_ray(glam::Vec2::new(u, v));
-                        accum += self.li(scene, ray, &mut rng);
-                    }
-                    row[x] = accum / spp as f32;
+                let mut accum = Vec3A::ZERO;
+                for _s in 0..spp {
+                    sampler.start_next_sample();
+                    // Jittered sub-pixel sample.
+                    let jitter = sampler.next_2d();
+                    let u = (x as f32 + jitter.x) / width as f32;
+                    let v = 1.0 - (y as f32 + jitter.y) / height as f32;
+                    let ray = camera.generate_ray(glam::Vec2::new(u, v));
+                    accum += self.li(scene, ray, &mut sampler);
                 }
-            });
+                film.add_sample(x, y, accum / spp as f32);
+            }
+        });
 
-        pixels
+        film
     }
 }
 

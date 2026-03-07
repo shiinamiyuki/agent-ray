@@ -1,28 +1,12 @@
 use agent_ray::cameras::PinholeCamera;
+use agent_ray::film::ToneMapper;
 use agent_ray::importer::load_obj_scene;
 use agent_ray::integrators::{BdptConfig, BidirectionalPathTracer, Integrator, MisMode};
 use agent_ray::lights::{PointLight, PowerLightDistribution};
 use agent_ray::scene::Scene;
-use agent_ray::utils::save_image_as_png;
 use glam::{Mat4, Vec3A};
 use std::path::Path;
 use std::sync::Arc;
-
-// ---------------------------------------------------------------------------
-// Simple Reinhard tone-mapper + gamma correction
-// ---------------------------------------------------------------------------
-
-#[inline]
-fn tonemap(linear: Vec3A) -> Vec3A {
-    let lum = 0.2126 * linear.x + 0.7152 * linear.y + 0.0722 * linear.z;
-    let scale = if lum > 1e-6 {
-        (lum / (1.0 + lum)) / lum
-    } else {
-        1.0 / (1.0 + lum)
-    };
-    let mapped = (linear * scale).clamp(Vec3A::ZERO, Vec3A::ONE);
-    mapped.powf(1.0 / 2.2)
-}
 
 fn main() {
     let width: usize = 1600;
@@ -67,7 +51,7 @@ fn main() {
 
     let config = BdptConfig {
         spp: 16,
-        max_depth: 2,
+        max_depth: 5,
         rr_depth: 3,
         mis_mode: MisMode::Power,
         mis_beta: 1.0,
@@ -79,20 +63,14 @@ fn main() {
         "Rendering {}×{} @ {}spp (BDPT)…",
         width, height, integrator.config.spp
     );
-    let hdr = integrator.render(&scene, &camera, width, height);
+    let film = integrator.render(&scene, &camera, width, height);
 
     // -----------------------------------------------------------------------
     // Tone-map and save.
     // -----------------------------------------------------------------------
-    let mut pixels = vec![0u8; width * height * 3];
-    for (i, radiance) in hdr.iter().enumerate() {
-        let srgb = tonemap(*radiance);
-        pixels[i * 3] = (srgb.x * 255.0 + 0.5) as u8;
-        pixels[i * 3 + 1] = (srgb.y * 255.0 + 0.5) as u8;
-        pixels[i * 3 + 2] = (srgb.z * 255.0 + 0.5) as u8;
-    }
-
     let out = "bdpt_test.png";
-    save_image_as_png(&pixels, width as u32, height as u32, out).unwrap();
+    film.to_rgb_image(ToneMapper::Reinhard, 2.2, 1.0)
+        .save(out)
+        .expect("Failed to save image");
     println!("Saved → {out}");
 }

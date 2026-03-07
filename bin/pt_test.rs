@@ -1,35 +1,12 @@
 use agent_ray::cameras::PinholeCamera;
+use agent_ray::film::ToneMapper;
 use agent_ray::importer::load_obj_scene;
 use agent_ray::integrators::{Integrator, PathTracer, PathTracerConfig};
 use agent_ray::lights::{PointLight, PowerLightDistribution};
 use agent_ray::scene::Scene;
-use agent_ray::utils::save_image_as_png;
 use glam::{Mat4, Vec3A};
 use std::path::Path;
 use std::sync::Arc;
-
-// ---------------------------------------------------------------------------
-// Simple Reinhard tone-mapper + gamma correction
-// ---------------------------------------------------------------------------
-
-/// Luminance-based Reinhard operator followed by sRGB gamma (2.2).
-///
-/// The luminance is compressed with L_out = L / (1 + L) and the colour is
-/// rescaled accordingly to preserve hue and saturation.  A minimum luminance
-/// floor avoids a division by zero for perfectly black pixels.
-#[inline]
-fn tonemap(linear: Vec3A) -> Vec3A {
-    let lum = 0.2126 * linear.x + 0.7152 * linear.y + 0.0722 * linear.z;
-    // Luminance-preserving Reinhard.
-    let scale = if lum > 1e-6 {
-        (lum / (1.0 + lum)) / lum
-    } else {
-        1.0 / (1.0 + lum) // degenerate: per-channel fallback
-    };
-    let mapped = (linear * scale).clamp(Vec3A::ZERO, Vec3A::ONE);
-    // Gamma 2.2 encode.
-    mapped.powf(1.0 / 2.2)
-}
 
 fn main() {
     let width: usize = 1600;
@@ -83,7 +60,7 @@ fn main() {
 
     let config = PathTracerConfig {
         spp: 16,
-        max_depth: 2,
+        max_depth: 5,
         rr_depth: 3,
     };
     let integrator = PathTracer::new(config);
@@ -92,20 +69,18 @@ fn main() {
         "Rendering {}×{} @ {}spp…",
         width, height, integrator.config.spp
     );
-    let hdr = integrator.render(&scene, &camera, width, height);
+    let film = integrator.render(&scene, &camera, width, height);
 
     // -----------------------------------------------------------------------
     // Tone-map to 8-bit sRGB and save.
     // -----------------------------------------------------------------------
-    let mut pixels = vec![0u8; width * height * 3];
-    for (i, radiance) in hdr.iter().enumerate() {
-        let srgb = tonemap(*radiance);
-        pixels[i * 3] = (srgb.x * 255.0 + 0.5) as u8;
-        pixels[i * 3 + 1] = (srgb.y * 255.0 + 0.5) as u8;
-        pixels[i * 3 + 2] = (srgb.z * 255.0 + 0.5) as u8;
-    }
-
     let out = "pt_test.png";
-    save_image_as_png(&pixels, width as u32, height as u32, out).unwrap();
+    film.to_rgb_image(ToneMapper::Reinhard, 2.2, 1.0)
+        .save(out)
+        .expect("Failed to save image");
     println!("Saved → {out}");
+
+    let exr_out = "pt_test.exr";
+    film.save_exr(exr_out, 1.0).expect("Failed to save EXR");
+    println!("Saved → {exr_out}");
 }

@@ -64,14 +64,14 @@
 use std::sync::Arc;
 
 use glam::{Vec2, Vec3A};
-use rand::rngs::SmallRng;
-use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 
 use crate::cameras::Camera;
+use crate::film::{Film, ToneMapper};
 use crate::geometry::{Onb, Ray};
 use crate::integrators::Integrator;
 use crate::lights::Light;
+use crate::sampler::{IndependentSampler, Sampler};
 use crate::scene::Scene;
 use crate::surfaces::Bsdf;
 
@@ -341,7 +341,7 @@ fn generate_camera_subpath(
     ray: Ray,
     max_depth: u32,
     rr_depth: u32,
-    rng: &mut SmallRng,
+    sampler: &mut dyn Sampler,
 ) -> Vec<PathVertex> {
     let mut vertices: Vec<PathVertex> = Vec::with_capacity(max_depth as usize + 1);
 
@@ -389,8 +389,8 @@ fn generate_camera_subpath(
         let wo = -current_ray.direction;
         let wo_local = hit.onb.to_local(wo);
 
-        let u_sel: f32 = rng.random();
-        let u_dir = Vec2::new(rng.random(), rng.random());
+        let u_sel: f32 = sampler.next_1d();
+        let u_dir = sampler.next_2d();
         let Some(bs) = hit.bsdf.sample(wo_local, hit.tex_uv, u_sel, u_dir) else {
             break;
         };
@@ -421,7 +421,7 @@ fn generate_camera_subpath(
         // Russian roulette.
         if depth + 1 >= rr_depth {
             let survival = throughput.max_element().min(0.95);
-            if rng.random::<f32>() > survival || survival <= 0.0 {
+            if sampler.next_1d() > survival || survival <= 0.0 {
                 break;
             }
             throughput /= survival;
@@ -444,7 +444,7 @@ fn generate_light_subpath(
     scene: &Scene,
     max_depth: u32,
     rr_depth: u32,
-    rng: &mut SmallRng,
+    sampler: &mut dyn Sampler,
 ) -> Vec<PathVertex> {
     let mut vertices: Vec<PathVertex> = Vec::with_capacity(max_depth as usize + 1);
 
@@ -454,13 +454,13 @@ fn generate_light_subpath(
         None => return vertices,
     };
 
-    let u_sel: f32 = rng.random();
+    let u_sel: f32 = sampler.next_1d();
     let (light_idx, sel_pmf) = light_dist.sample_index(u_sel);
     let light = &scene.lights[light_idx];
 
     // -- Sample emission ---------------------------------------------------
-    let u_pos = Vec2::new(rng.random(), rng.random());
-    let u_dir = Vec2::new(rng.random(), rng.random());
+    let u_pos = sampler.next_2d();
+    let u_dir = sampler.next_2d();
     let Some(emission) = light.sample_emission(u_pos, u_dir) else {
         return vertices;
     };
@@ -518,8 +518,8 @@ fn generate_light_subpath(
         let wo = -current_ray.direction;
         let wo_local = hit.onb.to_local(wo);
 
-        let u_sel: f32 = rng.random();
-        let u_dir = Vec2::new(rng.random(), rng.random());
+        let u_sel: f32 = sampler.next_1d();
+        let u_dir = sampler.next_2d();
         let Some(bs) = hit.bsdf.sample(wo_local, hit.tex_uv, u_sel, u_dir) else {
             break;
         };
@@ -544,7 +544,7 @@ fn generate_light_subpath(
         // Russian roulette.
         if depth + 1 >= rr_depth {
             let survival = throughput.max_element().min(0.95);
-            if rng.random::<f32>() > survival || survival <= 0.0 {
+            if sampler.next_1d() > survival || survival <= 0.0 {
                 break;
             }
             throughput /= survival;
@@ -1173,47 +1173,25 @@ impl BidirectionalPathTracer {
 
     /// Write one PNG per `(s, t)` strategy that had non-zero contributions.
     fn dump_strategy_images(
-        strat_bufs: &[Vec<std::sync::Mutex<Vec3A>>],
+        strat_films: &[Film],
         stride: usize,
         n_strats: usize,
-        width: usize,
-        height: usize,
         spp: u32,
     ) {
         let inv_spp = 1.0 / spp as f32;
         for si in 0..n_strats {
             let s = si / stride;
             let t = si % stride;
-            let buf = &strat_bufs[si];
+            let film = &strat_films[si];
             // Check if any pixel is non-zero.
-            let any_nonzero = buf.iter().any(|m| {
-                let v = m.lock().unwrap();
-                *v != Vec3A::ZERO
-            });
+            let any_nonzero = (0..film.len())
+                .any(|i| film.get_pixel_by_index(i) != Vec3A::ZERO);
             if !any_nonzero {
                 continue;
             }
-            // Build a flat image buffer and save.
-            let mut img_buf = image::RgbImage::new(width as u32, height as u32);
-            for y_row in 0..height {
-                for x_col in 0..width {
-                    let idx = y_row * width + x_col;
-                    let v = *buf[idx].lock().unwrap() * inv_spp;
-                    // Simple Reinhard tonemapping + gamma.
-                    let tone = |c: f32| -> u8 {
-                        let c = c.max(0.0);
-                        let mapped = c / (1.0 + c);
-                        (mapped.powf(1.0 / 2.2) * 255.0).min(255.0) as u8
-                    };
-                    img_buf.put_pixel(
-                        x_col as u32,
-                        y_row as u32,
-                        image::Rgb([tone(v.x), tone(v.y), tone(v.z)]),
-                    );
-                }
-            }
+            let img = film.to_rgb_image(ToneMapper::Reinhard, 2.2, inv_spp);
             let path = format!("bdpt_s{}_t{}.png", s, t);
-            if let Err(e) = img_buf.save(&path) {
+            if let Err(e) = img.save(&path) {
                 eprintln!("Failed to save {}: {}", path, e);
             } else {
                 println!("Saved strategy image: {}", path);
@@ -1246,158 +1224,134 @@ impl Integrator for BidirectionalPathTracer {
         camera: &dyn Camera,
         width: usize,
         height: usize,
-    ) -> Vec<Vec3A> {
+    ) -> Arc<Film> {
         let spp = self.config.spp;
         let max_depth = self.config.max_depth;
         let rr_depth = self.config.rr_depth;
         let mis_mode = self.config.mis_mode;
         let mis_beta = self.config.mis_beta;
         let debug_strat = self.config.debug_strategy_images;
-        let n_pixels = width * height;
 
         // The maximum strategy index we can encounter: s, t each in
         // [0, max_depth + 1].  We flatten (s, t) → s * stride + t.
         let stride = max_depth as usize + 2; // t can be 0..=max_depth+1
         let n_strats = stride * stride;
 
-        // Primary accumulation buffer (per-pixel, filled by s ≥ 2 strategies).
-        let mut pixels = vec![Vec3A::ZERO; n_pixels];
+        // Primary accumulation buffer (filled by s ≥ 2 strategies).
+        let film = Arc::new(Film::new(width, height));
+
+        // Splat buffer for the s=1 (light tracing) strategy.
+        let splat_film = Film::new(width, height);
 
         // Per-strategy accumulation buffers (only allocated when debugging).
-        use std::sync::Mutex;
-        let strat_bufs: Vec<Vec<Mutex<Vec3A>>> = if debug_strat {
-            (0..n_strats)
-                .map(|_| (0..n_pixels).map(|_| Mutex::new(Vec3A::ZERO)).collect())
-                .collect()
+        let strat_films: Vec<Film> = if debug_strat {
+            (0..n_strats).map(|_| Film::new(width, height)).collect()
         } else {
             Vec::new()
         };
 
-        // Splat buffer for the s=1 (light tracing) strategy.
-        let splat_buf: Vec<Mutex<Vec3A>> =
-            (0..n_pixels).map(|_| Mutex::new(Vec3A::ZERO)).collect();
+        // Process rows in parallel; each pixel gets an independent sampler.
+        (0..height).into_par_iter().for_each(|y_row| {
+            for x_col in 0..width {
+                let mut sampler = IndependentSampler::seeded_for_pixel(x_col as u32, y_row as u32);
 
-        // Process rows in parallel; each pixel gets an independent RNG.
-        pixels
-            .par_chunks_mut(width)
-            .enumerate()
-            .for_each(|(y_row, row)| {
-                for x_col in 0..width {
-                    let seed = (y_row as u64).wrapping_mul(2654435761)
-                        ^ (x_col as u64).wrapping_mul(805459861);
-                    let mut rng = SmallRng::seed_from_u64(seed);
+                let mut accum = Vec3A::ZERO;
+                let pix_idx = y_row * width + x_col;
 
-                    let mut accum = Vec3A::ZERO;
-                    let pix_idx = y_row * width + x_col;
+                for _s in 0..spp {
+                    sampler.start_next_sample();
+                    // -- Generate camera ray (jittered sub-pixel) ------
+                    let jitter = sampler.next_2d();
+                    let u = (x_col as f32 + jitter.x) / width as f32;
+                    let v = 1.0 - (y_row as f32 + jitter.y) / height as f32;
+                    let ray = camera.generate_ray(glam::Vec2::new(u, v));
 
-                    for _ in 0..spp {
-                        // -- Generate camera ray (jittered sub-pixel) ------
-                        let jx: f32 = rng.random();
-                        let jy: f32 = rng.random();
-                        let u = (x_col as f32 + jx) / width as f32;
-                        let v = 1.0 - (y_row as f32 + jy) / height as f32;
-                        let ray = camera.generate_ray(glam::Vec2::new(u, v));
+                    // -- Build subpaths --------------------------------
+                    let cam_path = generate_camera_subpath(
+                        scene, camera, ray, max_depth, rr_depth, &mut sampler,
+                    );
+                    let light_path =
+                        generate_light_subpath(scene, max_depth, rr_depth, &mut sampler);
 
-                        // -- Build subpaths --------------------------------
-                        let cam_path = generate_camera_subpath(
-                            scene, camera, ray, max_depth, rr_depth, &mut rng,
-                        );
-                        let light_path =
-                            generate_light_subpath(scene, max_depth, rr_depth, &mut rng);
+                    let s_max = cam_path.len();
+                    let t_max = light_path.len();
 
-                        let s_max = cam_path.len();
-                        let t_max = light_path.len();
+                    // -- Enumerate all (s, t) strategies ---------------
+                    let path_len_limit = max_depth as usize + 2;
+                    for t in 0..=t_max {
+                        for s in 0..=s_max {
+                            if s + t < 2 {
+                                continue;
+                            }
+                            if s + t > path_len_limit {
+                                continue;
+                            }
+                            if s == 0 {
+                                continue;
+                            }
 
-                        // -- Enumerate all (s, t) strategies ---------------
-                        // The full path has s + t vertices and s + t - 1
-                        // edges.  The number of surface bounces (interior
-                        // vertices) is s + t - 2.  We must ensure
-                        // s + t - 2 ≤ max_depth, i.e. s + t ≤ max_depth + 2.
-                        let path_len_limit = max_depth as usize + 2;
-                        for t in 0..=t_max {
-                            for s in 0..=s_max {
-                                if s + t < 2 {
-                                    continue;
-                                }
-                                if s + t > path_len_limit {
-                                    continue;
-                                }
-                                if s == 0 {
-                                    continue;
-                                }
-
-                                if s == 1 {
-                                    // s=1: light tracing to camera → splat.
-                                    if let Some((c, px, py)) = connect_bdpt_s1(
-                                        scene,
-                                        camera,
-                                        &cam_path,
-                                        &light_path,
-                                        t,
-                                        width,
-                                        height,
-                                        mis_mode,
-                                        mis_beta,
-                                    ) {
-                                        let ix = (px as usize).min(width - 1);
-                                        let iy = (py as usize).min(height - 1);
-                                        let idx = iy * width + ix;
-                                        {
-                                            let mut sp =
-                                                splat_buf[idx].lock().unwrap();
-                                            *sp += c;
-                                        }
-                                        if debug_strat {
-                                            let si = 1 * stride + t;
-                                            if si < n_strats {
-                                                let mut sp = strat_bufs[si][idx]
-                                                    .lock()
-                                                    .unwrap();
-                                                *sp += c;
-                                            }
+                            if s == 1 {
+                                // s=1: light tracing to camera → splat.
+                                if let Some((c, px, py)) = connect_bdpt_s1(
+                                    scene,
+                                    camera,
+                                    &cam_path,
+                                    &light_path,
+                                    t,
+                                    width,
+                                    height,
+                                    mis_mode,
+                                    mis_beta,
+                                ) {
+                                    let ix = (px as usize).min(width - 1);
+                                    let iy = (py as usize).min(height - 1);
+                                    let idx = iy * width + ix;
+                                    splat_film.add_splat(idx, c);
+                                    if debug_strat {
+                                        let si = 1 * stride + t;
+                                        if si < n_strats {
+                                            strat_films[si].add_splat(idx, c);
                                         }
                                     }
-                                    continue;
                                 }
+                                continue;
+                            }
 
-                                // s ≥ 2, t ≥ 0: general / NEE / t=0.
-                                if let Some((c, _, _)) = connect_bdpt(
-                                    scene, camera, &cam_path, &light_path, s, t,
-                                    mis_mode, mis_beta,
-                                ) {
-                                    accum += c;
-                                    if debug_strat {
-                                        let si = s * stride + t;
-                                        if si < n_strats {
-                                            let mut sp = strat_bufs[si][pix_idx]
-                                                .lock()
-                                                .unwrap();
-                                            *sp += c;
-                                        }
+                            // s ≥ 2, t ≥ 0: general / NEE / t=0.
+                            if let Some((c, _, _)) = connect_bdpt(
+                                scene, camera, &cam_path, &light_path, s, t,
+                                mis_mode, mis_beta,
+                            ) {
+                                accum += c;
+                                if debug_strat {
+                                    let si = s * stride + t;
+                                    if si < n_strats {
+                                        strat_films[si].add_splat(pix_idx, c);
                                     }
                                 }
                             }
                         }
                     }
-
-                    row[x_col] = accum / spp as f32;
                 }
-            });
 
-        // Merge splat buffer into primary pixels.
+                film.add_sample(x_col, y_row, accum / spp as f32);
+            }
+        });
+
+        // Merge splat buffer into primary film.
         let inv_spp = 1.0 / spp as f32;
-        for (i, mutex) in splat_buf.iter().enumerate() {
-            let splat = mutex.lock().unwrap();
-            if *splat != Vec3A::ZERO {
-                pixels[i] += *splat * inv_spp;
+        for i in 0..film.len() {
+            let splat = splat_film.get_pixel_by_index(i);
+            if splat != Vec3A::ZERO {
+                film.add_splat(i, splat * inv_spp);
             }
         }
 
         // -- Dump per-strategy images (debug mode) -------------------------
         if debug_strat {
-            Self::dump_strategy_images(&strat_bufs, stride, n_strats, width, height, spp);
+            Self::dump_strategy_images(&strat_films, stride, n_strats, spp);
         }
 
-        pixels
+        film
     }
 }

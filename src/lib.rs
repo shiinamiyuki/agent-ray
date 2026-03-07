@@ -14,6 +14,8 @@ pub mod accel {
 pub mod texture;
 pub mod surfaces;
 pub mod lights;
+pub mod sampler;
+pub mod film;
 pub mod scene;
 pub mod integrators;
 pub mod importer;

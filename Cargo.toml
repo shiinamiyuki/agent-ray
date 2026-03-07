@@ -8,6 +8,8 @@ glam = "0.32.0"
 rand = "0.10.0"
 rayon = "1.11.0"
 image = "0.25.5"
+exr = "1.74.0"
+smallvec = "1"
 tobj = "4.0.3"
 anyhow = "1.0.102"
 mimalloc = { version = "*", features = ["secure"] }

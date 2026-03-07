@@ -28,6 +28,8 @@ Just use `cargo build` to build the project. The `dev` profile has incremental b
         - `src/integrators/photon_mapper.rs`: implements a photon mapper for global illumination.
         - `src/integrators/vol_path_tracer.rs`: implements a volumetric path tracer for participating media.
         - src/integrators/bidirectional_path_tracer.rs: implements a bidirectional path tracer for improved convergence.
+    - `src/sampler.rs`: defines the `Sampler` trait and `IndependentSampler` for Monte Carlo sample generation.
+    - `src/film.rs`: defines the `Film` class with atomic float pixel accumulation, tone-mapping (`ToneMapper`), and `to_rgb_image` for LDR output.
     - `src/cameras/`: defines various camera models for scene rendering.
     - `src/lights/`: defines various light sources for scene illumination.
     - `src/scene.rs`: defines the scene structure and loading functionality.

@@ -174,3 +174,53 @@ Implemented a full bidirectional path tracer with MIS in `src/integrators/bidire
 - The key insight: Camera and Light endpoint vertices have **dedicated sampling routines** (`sample_we` for camera, `Light::sample` / NEE for lights) that handle their delta nature. These strategies ARE valid and must compete in MIS. Only delta *surface* vertices (specular BSDFs) are genuinely unreachable as generic connection endpoints.
 - Fix: introduced `is_mis_delta()` helper that returns `false` for `Camera` and `Light` vertex types (their strategies exist), and `v.is_delta` only for `Surface` vertices. Also set `prev_delta = true` for `s=0` and `t=0` strategies since those are not yet implemented, correctly excluding them from the MIS sum.
 - Removed incorrect `assert!(sum_ri > 0.0)` — `sum_ri == 0` is legitimate when the only alternative strategies involve unimplemented paths (s=0, t=0).
+
+## 2026-03-07 - Sampler Trait Abstraction
+
+Introduced a `Sampler` trait (`src/sampler.rs`) to decouple integrators from the raw RNG, enabling future use of blue-noise, Sobol, or stratified samplers.
+
+**`src/sampler.rs`:**
+- `Sampler` trait (object-safe, `Send`): `next_1d() -> f32`, `next_2d() -> Vec2`, `start_next_sample()`, `clone_for_pixel(x, y, sample_index) -> Box<dyn Sampler>`.
+- `IndependentSampler`: wraps `SmallRng` for plain i.i.d. uniform samples. `seeded_for_pixel(x, y)` reproduces the same deterministic hash the integrators were using, so renders are bitwise identical.
+
+**Integrator refactoring:**
+- `PathTracer`: `li()` now takes `&mut dyn Sampler` instead of `&mut SmallRng`. All `rng.random()` / `rng.random::<f32>()` calls replaced with `sampler.next_1d()` / `sampler.next_2d()`. Render loop creates an `IndependentSampler` per pixel.
+- `BidirectionalPathTracer`: `generate_camera_subpath` and `generate_light_subpath` now take `&mut dyn Sampler`. All internal RNG usage replaced with sampler calls. Render loop updated similarly.
+- Removed direct `rand::rngs::SmallRng` / `rand::{RngExt, SeedableRng}` imports from both integrators.
+
+## 2026-03-07 - Film Class with Atomic Float Accumulation
+
+Added `src/film.rs` — a proper film/framebuffer abstraction with lock-free atomic pixel accumulation.
+
+**`AtomicF32`:** a `#[repr(transparent)]` wrapper around `AtomicU32` that stores `f32` bits and provides `fetch_add` via a CAS loop. No mutex overhead.
+
+**`AtomicPixel`:** three `AtomicF32` channels (R, G, B) with `add(Vec3A)` and `load() -> Vec3A`.
+
+**`Film`:**
+- `new(width, height)` — creates a black framebuffer.
+- `add_sample(x, y, value)` / `add_splat(index, value)` — atomic accumulation safe from any thread.
+- `get_pixel(x, y)` / `get_pixel_by_index(i)` — read accumulated values.
+- `to_hdr_vec() -> Vec<Vec3A>` — snapshot for legacy code paths.
+- `to_rgb_image(tone_mapper, gamma, scale) -> image::RgbImage` — tone-map + gamma-encode to LDR in one call.
+
+**`ToneMapper` enum:** `Clamp`, `Reinhard` (luminance-preserving), `ReinhardExtended { white_point }`.
+
+**Integrator refactoring:**
+- `Integrator::render` now returns `Arc<Film>` instead of `Vec<Vec3A>`.
+- `PathTracer`: accumulates into `Film` via `add_sample`; parallel iteration uses `into_par_iter` over rows.
+- `BidirectionalPathTracer`: replaced all `Mutex<Vec3A>` splat/strategy buffers with `Film` instances. Splat film for s=1 light tracing and per-strategy debug films all use lock-free atomics.
+- `dump_strategy_images` now takes `&[Film]` and calls `film.to_rgb_image(Reinhard, 2.2, inv_spp)`.
+
+**Bin test cleanup:**
+- `pt_test.rs` / `bdpt_test.rs`: removed manual `tonemap()` functions and byte-buffer encoding; replaced with `film.to_rgb_image(ToneMapper::Reinhard, 2.2, 1.0).save(path)`.
+
+## 2026-03-07 - OpenEXR Export
+
+Added `Film::save_exr(path, scale)` for writing linear HDR framebuffers as compressed OpenEXR files.
+
+- Uses the `exr` crate directly (already a transitive dependency of `image`) for full control over encoding.
+- Writes half-float (f16) RGB channels with **ZIP16** compression — standard for VFX beauty passes.
+- `scale` parameter allows `1/spp` normalisation before writing.
+- Added `exr` and `smallvec` as direct dependencies in `Cargo.toml`.
+- Integrated into `pt_test.rs` — now saves both `pt_test.png` and `pt_test.exr`.
+- Compression reduces file size by ~2.6× vs uncompressed (13 MB → 5 MB for 1600×720).
