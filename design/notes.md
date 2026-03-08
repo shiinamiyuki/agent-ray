@@ -245,3 +245,19 @@ Implemented a gradient-domain path tracer (G-PT) using random replay shift mappi
 - Random replay shift mapping is always invertible (no reconnection needed), making the implementation simpler than half-vector copy or manifold exploration shifts.
 - Only forward differences (x+1, y+1) are traced; backward shifts could be added later for symmetric gradient estimation at the cost of 2 additional path traces per sample.
 - The Poisson solver uses warm-start from the primal image and red-black ordering for faster convergence.
+
+## 2026-03-08 - BDPT s=1 Camera Importance Bug Fix
+Fixed a bug in the `s=1` (light tracing to camera) strategy in the bidirectional path tracer that caused slightly brighter images compared to the `s=2,t=1` (NEE) strategy under uniform MIS weights.
+
+**Root cause:** In `connect_bdpt_s1`, the geometric coupling between a light-subpath surface vertex and the camera was missing the `|cos θ_cam|` factor (the angle between the camera forward and the connection direction). The camera's importance `We = 1/(A·cos⁴θ)` does NOT absorb this factor — the measurement equation is `I_j = ∫ We · Li · |cos θ| dω`, where `|cos θ|` is separate. The missing factor caused the s=1 contribution to be scaled by `1/cos θ` (always ≥ 1), making it brighter, especially toward image edges.
+
+**Fix:** Changed `CameraWeSample::we` to return `We · |cos θ| = 1/(A·cos³θ)` instead of the raw `1/(A·cos⁴θ)`. This folds the measurement cosine into the importance value, matching the camera's solid-angle sampling PDF (`pdf_we`). The `connect_bdpt_s1` formula now correctly computes `contribution = throughput · f · cos_surface/dist² · we` without needing a separate cos θ_cam factor.
+
+## 2026-03-08 - BDPT MIS Weight Bugs Fixed
+Fixed two bugs in the MIS weight computation that caused the combined Power-heuristic image to be brighter than the reference.
+
+**Bug 1 — Wrong `pdf_connect_light` in `connect_bdpt_s1`:**
+`pdf_connect_light` is the reverse PDF at y[t-1] — the area-measure probability of generating y[t-1] from the camera side. For the s=1 strategy, shifting to (s+1=2, t-1) means y[t-1] becomes z[1], the first camera hit, whose PDF is the camera's directional PDF (`camera.pdf_we`) converted to area at y. The code was incorrectly using the BSDF PDF at y and converting in the wrong direction (to the camera instead of to y), making the ratio too small and the s=1 MIS weight too high.
+
+**Bug 2 — Off-by-one in MIS weight walk loops:**
+The camera and light walk loops in `mis_weight` used ranges `(1..s).rev()` and `(1..t).rev()`, which re-processed the connection vertex already handled by the first step (z[s-1] or y[t-1]). Changed to `(0..s-1).rev()` and `(0..t-1).rev()` so each walk step processes the correct next vertex (z[s-2], z[s-3], ... and y[t-2], y[t-3], ...). For max_depth=1 this only added zero terms (pdf_rev=0 at leaf vertices), but for longer paths it would corrupt MIS weights.
