@@ -699,7 +699,7 @@ fn mis_weight(
                     }
                 }
 
-                for i in (1..s).rev() {
+                for i in (0..s.saturating_sub(1)).rev() {
                     let v = &camera_verts[i];
                     let rev = v.pdf_rev.max(0.0) as f64;
                     let fwd = v.pdf_fwd.max(1e-30) as f64;
@@ -745,7 +745,7 @@ fn mis_weight(
                     }
                 }
 
-                for i in (1..t).rev() {
+                for i in (0..t.saturating_sub(1)).rev() {
                     let v = &light_verts[i];
                     let rev = v.pdf_rev.max(0.0) as f64;
                     let fwd = v.pdf_fwd.max(1e-30) as f64;
@@ -1118,22 +1118,14 @@ fn connect_bdpt_s1(
     // Since the camera is a delta point, this is handled by setting
     // the camera vertex's delta flag.
     let pdf_connect_cam = 0.0; // camera is delta; ratio will be zero
-    let pdf_connect_light = if let Some(_bsdf_y) = &y.bsdf {
-        // PDF of sampling the direction from y toward the camera,
-        // converted to area measure.
-        let wo_y = if t >= 2 {
-            (light_verts[t - 2].p - y.p).normalize()
-        } else {
-            Vec3A::ZERO
-        };
-        let wi_y_to_cam = to_cam;
-        let wo_y_local = y.onb.to_local(wo_y);
-        let wi_y_local = y.onb.to_local(wi_y_to_cam);
-        let pdf_dir = y.bsdf.as_ref().unwrap().pdf(wi_y_local, wo_y_local);
-        // Convert to area at the camera (use camera forward as normal).
-        pdf_solid_angle_to_area(pdf_dir, y.p, camera.origin(), camera_verts[0].n)
-    } else {
-        0.0
+    let pdf_connect_light = {
+        // In strategy (s+1=2, t-1), y[t-1] becomes z[1] — the first camera
+        // hit.  Its area-measure PDF is the camera's directional PDF
+        // converted to area at y[t-1].
+        let dir_cam_to_y = (y.p - camera.origin()).normalize();
+        let cam_ray = Ray::new(camera.origin(), dir_cam_to_y, 0.0, 1.0);
+        let pdf_cam_dir = camera.pdf_we(&cam_ray);
+        pdf_solid_angle_to_area(pdf_cam_dir, camera.origin(), y.p, y.n)
     };
 
     let weight = mis_weight(
