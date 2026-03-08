@@ -1099,8 +1099,8 @@ fn connect_bdpt_s1(
     }
 
     // Geometric coupling between y and the camera.
-    // For a pinhole camera, there's no "surface" normal — we use the camera
-    // forward as a pseudo-normal (which is what CameraWeSample::we accounts for).
+    // `cam_sample.we` already includes the measurement |cos θ_cam| factor
+    // (We · cos θ), so we only need the surface-side cosine here.
     let cos_y = y.n.dot(to_cam).abs();
     let g_factor = cos_y / (dist * dist);
 
@@ -1189,9 +1189,8 @@ impl BidirectionalPathTracer {
             if !any_nonzero {
                 continue;
             }
-            let img = film.to_rgb_image(ToneMapper::Reinhard, 2.2, inv_spp);
-            let path = format!("bdpt_s{}_t{}.png", s, t);
-            if let Err(e) = img.save(&path) {
+            let path = format!("bdpt_s{}_t{}.exr", s, t);
+            if let Err(e) = strat_films[si].save_exr(&path, inv_spp) {
                 eprintln!("Failed to save {}: {}", path, e);
             } else {
                 println!("Saved strategy image: {}", path);

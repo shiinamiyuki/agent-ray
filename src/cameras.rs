@@ -17,8 +17,10 @@ pub struct CameraWeSample {
     pub wi: Vec3A,
     /// Distance from the surface point to the camera.
     pub dist: f32,
-    /// Camera importance function `We(p_cam → p_surface)`.  Multiplied by the
-    /// path throughput and the geometric coupling to produce a pixel value.
+    /// Camera importance `We · |cos θ|`, where `θ` is the angle between the
+    /// ray and the camera forward direction.  The measurement `|cos θ|` factor
+    /// is folded in so that the BDPT caller can simply multiply by
+    /// `throughput · BSDF · cos_surface / dist²` to get the pixel contribution.
     pub we: f32,
     /// Solid-angle PDF of this camera "sample" (used for MIS weights).
     pub pdf: f32,
@@ -158,19 +160,21 @@ impl Camera for PinholeCamera {
 
     /// Evaluate camera importance for a world-space point.
     ///
-    /// For a pinhole camera the importance function is:
+    /// For a pinhole camera the importance function (with the measurement
+    /// `|cos θ|` factor already folded in) is:
     ///
     /// ```text
-    /// We(ω) = 1 / (A_film · cos⁴ θ)
+    /// we(ω) = We(ω) · |cos θ| = 1 / (A_film · cos³ θ)
     /// ```
     ///
-    /// where `A_film` is the image-plane area at unit distance and `θ` is the
-    /// angle between `ω` and the optical axis.
+    /// This equals the camera's solid-angle sampling PDF, which is the
+    /// correct convention for BDPT: the caller multiplies by the surface
+    /// BSDF × `cos_surface / dist²` and obtains the pixel contribution.
     ///
     /// The solid-angle PDF of this "sample" is:
     ///
     /// ```text
-    /// pdf(ω) = dist² / (A_film · cos³ θ)
+    /// pdf(ω) = 1 / (A_film · cos³ θ)
     /// ```
     fn sample_we(
         &self,
@@ -223,11 +227,13 @@ impl Camera for PinholeCamera {
         }
 
         let cos2 = cos_theta * cos_theta;
-        let cos4 = cos2 * cos2;
         let cos3 = cos2 * cos_theta;
 
-        let we = 1.0 / (self.area * cos4);
-        let pdf = dist2 / (self.area * cos3);
+        // We · |cos θ| = 1/(A · cos⁴θ) · cos θ = 1/(A · cos³θ).
+        // Folding the measurement cos into `we` so that the BDPT caller
+        // only needs:  contribution = throughput · f · cos_surface/dist² · we.
+        let we = 1.0 / (self.area * cos3);
+        let pdf = 1.0 / (self.area * cos3);
 
         Some(CameraWeSample {
             pixel_x,
