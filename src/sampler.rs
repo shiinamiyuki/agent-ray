@@ -8,12 +8,12 @@
 //!
 //! ## Provided implementations
 //!
-//! - [`IndependentSampler`]: wraps a `SmallRng` for plain i.i.d. uniform
+//! - [`IndependentSampler`]: wraps a `Pcg32` for plain i.i.d. uniform
 //!   samples.  This is the default and reproduces the existing behaviour.
 
 use glam::Vec2;
-use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
+use rand_pcg::Pcg32;
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -51,30 +51,30 @@ pub trait Sampler: Send {
 }
 
 // ---------------------------------------------------------------------------
-// IndependentSampler — i.i.d. uniform samples via SmallRng
+// IndependentSampler — i.i.d. uniform samples via Pcg32
 // ---------------------------------------------------------------------------
 
 /// Plain independent (white-noise) sampler backed by a fast PRNG.
 ///
 /// This is the simplest possible sampler: every call to `next_1d` returns
 /// an i.i.d. uniform variate.  It reproduces the behaviour of the original
-/// integrators that used `SmallRng` directly.
+/// integrators that used `Pcg32` directly.
 pub struct IndependentSampler {
-    rng: SmallRng,
+    rng: Pcg32,
 }
 
 impl IndependentSampler {
     /// Create a sampler from an explicit seed.
     pub fn new(seed: u64) -> Self {
         Self {
-            rng: SmallRng::seed_from_u64(seed),
+            rng: Pcg32::seed_from_u64(seed),
         }
     }
 
     /// Deterministic seed derived from pixel coordinates.
     ///
     /// Uses the same hash the integrators were already using, so renders
-    /// are bitwise identical when switching from raw `SmallRng` to
+    /// are bitwise identical when switching from raw `Pcg32` to
     /// `IndependentSampler`.
     pub fn seeded_for_pixel(pixel_x: u32, pixel_y: u32) -> Self {
         let seed = (pixel_y as u64).wrapping_mul(2654435761)

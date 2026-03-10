@@ -261,3 +261,46 @@ Fixed two bugs in the MIS weight computation that caused the combined Power-heur
 
 **Bug 2 — Off-by-one in MIS weight walk loops:**
 The camera and light walk loops in `mis_weight` used ranges `(1..s).rev()` and `(1..t).rev()`, which re-processed the connection vertex already handled by the first step (z[s-1] or y[t-1]). Changed to `(0..s-1).rev()` and `(0..t-1).rev()` so each walk step processes the correct next vertex (z[s-2], z[s-3], ... and y[t-2], y[t-3], ...). For max_depth=1 this only added zero terms (pdf_rev=0 at leaf vertices), but for longer paths it would corrupt MIS weights.
+
+## 2026-03-08 - PSSMLT (Primary Sample Space Metropolis Light Transport)
+
+Implemented a full PSSMLT integrator in `src/integrators/pssmlt.rs`.
+
+**New files:**
+- `src/integrators/pssmlt.rs` — complete PSSMLT implementation with:
+  - `PssmltConfig`: spp, max_depth, rr_depth, n_bootstrap, n_chains, large_step_prob, sigma.
+  - `MCMCSampler`: a lazy N-dimensional primary-sample-space sampler implementing the `Sampler` trait. Supports two mutation strategies:
+    - **Large step (independent):** replaces the entire random vector with fresh i.i.d. uniform variates.
+    - **Small step (dependent):** perturbs each component via `fract(old + σ · N(0,1))` using Box-Muller Gaussian noise.
+    - The dimension N is dynamic — each `next_1d()` call either reads an existing dimension or extends the vector lazily.
+    - `start_proposal(large)` / `accept()` / `reject()` manage the proposal–state lifecycle.
+  - **Bootstrap phase:** traces `n_bootstrap` independent paths in parallel, computes their luminance, builds a CDF, and importance-resamples `n_chains` starting states weighted by luminance.
+  - **Chain phase:** runs `n_chains` independent Markov chains in parallel (via rayon). Each chain performs `mutations_per_chain` iterations where `n_chains × mutations_per_chain / n_pixels = spp`. At each iteration, a large or small step is chosen randomly according to `large_step_prob`. Proposals are accepted/rejected via the Metropolis ratio `min(1, f_new/f_old)`. Both accepted and rejected paths deposit contributions to the film using the standard Metropolis estimator weighting.
+  - **Normalisation:** large-step luminances are accumulated into a global atomic counter. The final image is scaled by `b_avg × n_pixels / total_mutations` to recover correct absolute brightness.
+  - `AtomicF64` helper for lock-free double-precision accumulation (CAS loop on `AtomicU64` bits).
+- `bin/pssmlt_test.rs` — test binary rendering the fireplace room scene with PSSMLT at 16 spp, 256 chains.
+
+**Modified files:**
+- `src/integrators/mod.rs` — registered `pssmlt` module, exported `Pssmlt` and `PssmltConfig`.
+- `Cargo.toml` — added `pssmlt_test` binary target.
+- `design/roadmap.md` — checked off PSSMLT milestone.
+
+## 2026-03-09 - Scene Serialization (serde + serde_json)
+Implemented JSON-based scene serialization and deserialization in `src/scene_format.rs`.
+
+**New module: `src/scene_format.rs`**
+- `SceneDescription` — top-level serializable struct containing materials, meshes, objects, lights, and camera.
+- `MaterialDesc` — enum with `Lambertian { albedo }`, `Conductor { f0, roughness }`, `Dielectric { eta, roughness }` variants.
+- `MeshDesc` — flat-array representation of `TriangleMesh` (positions, normals, tex_coords, indices, material_slots) with `from_mesh()` / `build()` round-trip methods.
+- `ObjectDesc` — links a mesh index to material indices with an optional 4×4 transform.
+- `LightDesc` — enum starting with `Point { position, intensity }` (extensible for future light types).
+- `CameraDesc` — enum with `PinholeLookAt` and `PinholeEyeAngle` variants.
+- `SceneDescription::build()` — reconstructs a runtime `Scene` + `PinholeCamera` from the description, using `PowerLightDistribution` when lights are present.
+- `SceneDescription::from_scene()` — captures runtime scene objects into the serializable format (mesh deduplication by `Arc` pointer identity; materials stored as placeholder Lambertian since `dyn Bsdf` cannot be introspected).
+- `save_scene_file()` / `load_scene_file()` — pretty-printed JSON file I/O.
+- `load_and_build_scene()` — convenience one-shot load + build.
+
+**Modified files:**
+- `Cargo.toml` — added `serde = { version = "1", features = ["derive"] }` and `serde_json = "1"`.
+- `src/lib.rs` — registered `scene_format` module.
+- `design/roadmap.md` — checked off scene serialization milestone.

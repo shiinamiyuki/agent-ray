@@ -19,6 +19,7 @@ pub mod film;
 pub mod scene;
 pub mod integrators;
 pub mod importer;
+pub mod scene_format;
 
 use mimalloc::MiMalloc;
 

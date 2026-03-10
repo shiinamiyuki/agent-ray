@@ -7,9 +7,11 @@ use crate::scene::Scene;
 pub mod path_tracer;
 pub mod bidirectional_path_tracer;
 pub mod gradient_domain_pt;
+pub mod pssmlt;
 pub use path_tracer::{PathTracer, PathTracerConfig};
 pub use bidirectional_path_tracer::{BidirectionalPathTracer, BdptConfig, MisMode};
 pub use gradient_domain_pt::{GradientDomainPathTracer, GdptConfig};
+pub use pssmlt::{Pssmlt, PssmltConfig};
 
 /// Common interface for all rendering integrators.
 ///

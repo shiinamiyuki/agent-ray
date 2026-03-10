@@ -6,6 +6,7 @@ Agent Ray is a CPU-based ray tracing renderer written in Rust.
     - [x] Lambertian
     - [x] Microfacet (GGX) — conductor + dielectric
     - [ ] OpenPBR
+- [x] Implement scene serialization using serde and serde_json
 - [ ] Implement programmable shader graphs for flexible material definitions.
     - [ ] A Python API for building shader graphs. It should use a tracing based approach to assemble the shader graph, similar to how PyTorch builds its computation graph.
     - [ ] Implement a virtual machine to execute the shader graph on CPU.
@@ -15,6 +16,7 @@ Agent Ray is a CPU-based ray tracing renderer written in Rust.
     - [ ] Volumetric path tracer for participating media.
     - [x] Bidirectional path tracer with full MIS.
     - [x] Gradient-domain path tracer using random replay shift mapping
+    - [x] PSSMLT (Primary Sample Space Metropolis Light Transport)
 - [x] Implement various camera models for scene rendering.
     - [x] Perspective camera (Pinhole)
     - [ ] Orthographic camera
