@@ -1,4 +1,4 @@
-//! CLI tool that imports one or more OBJ files into a scene JSON file.
+//! CLI tool that imports one or more OBJ files into a scene JSON + BIN pair.
 //!
 //! # Usage
 //!
@@ -11,15 +11,17 @@
 //!   -h, --help                  Print this help message
 //! ```
 //!
-//! If `--output` points to an existing scene file (and `--overwrite` is not
-//! set) the OBJ meshes and materials are **appended** to that scene.
-//! Otherwise a fresh scene with default camera settings is created.
+//! Geometry data (vertices, normals, UVs, indices) is stored in a companion
+//! `.bin` file next to the JSON.  If `--output` points to an existing scene
+//! file (and `--overwrite` is not set) the new meshes are **appended** to
+//! both the JSON and the binary buffer.
 
 use std::path::Path;
 use std::process;
 
 use agent_ray::scene_format::{
-    import_obj_to_scene_desc, load_scene_file, save_scene_file, SceneDescription,
+    bin_path_for, import_obj_to_scene_desc, load_bin_buffer, load_scene_file, save_scene_file,
+    BinBuffer, SceneDescription,
 };
 
 fn print_help() {
@@ -27,7 +29,7 @@ fn print_help() {
         "\
 Usage: obj_importer [OPTIONS] --output <SCENE.json> <OBJ_FILE>...
 
-Import one or more OBJ files into a scene JSON file.
+Import one or more OBJ files into a scene JSON + BIN pair.
 
 Arguments:
   <OBJ_FILE>...              One or more .obj files to import
@@ -71,7 +73,6 @@ fn parse_args() -> Option<Args> {
                 overwrite = true;
             }
             other => {
-                // Catch accidental flags.
                 if other.starts_with('-') {
                     eprintln!("error: unknown option '{other}'");
                     return None;
@@ -95,11 +96,7 @@ fn parse_args() -> Option<Args> {
         return None;
     }
 
-    Some(Args {
-        output,
-        overwrite,
-        obj_files,
-    })
+    Some(Args { output, overwrite, obj_files })
 }
 
 fn main() {
@@ -112,45 +109,61 @@ fn main() {
     };
 
     let out_path = Path::new(&args.output);
+    let scene_dir = out_path.parent().unwrap_or(Path::new("."));
 
-    // Load existing scene or create a fresh one.
-    let mut desc = if !args.overwrite && out_path.exists() {
+    // Load existing scene + bin, or create fresh ones.
+    let (mut desc, mut buf) = if !args.overwrite && out_path.exists() {
         println!("Loading existing scene '{}'…", out_path.display());
-        match load_scene_file(out_path) {
+        let d = match load_scene_file(out_path) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("error: failed to load '{}': {e}", out_path.display());
                 process::exit(1);
             }
-        }
+        };
+        let b = match load_bin_buffer(&d, scene_dir) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error: failed to load binary buffer: {e}");
+                process::exit(1);
+            }
+        };
+        (d, b)
     } else {
         if args.overwrite && out_path.exists() {
             println!("Overwriting existing scene '{}'.", out_path.display());
         }
         println!("Creating new scene.");
-        SceneDescription::default()
+        (SceneDescription::default(), BinBuffer::new())
     };
 
     // Import each OBJ file.
     for obj in &args.obj_files {
         let obj_path = Path::new(obj);
         println!("Importing '{}'…", obj_path.display());
-        if let Err(e) = import_obj_to_scene_desc(&mut desc, obj_path, None) {
+        if let Err(e) = import_obj_to_scene_desc(&mut desc, &mut buf, obj_path, None) {
             eprintln!("error: failed to import '{}': {e}", obj_path.display());
             process::exit(1);
         }
         println!(
-            "  → {} meshes, {} materials, {} objects total",
+            "  → {} meshes, {} materials, {} objects total  (bin: {:.1} KB)",
             desc.meshes.len(),
             desc.materials.len(),
             desc.objects.len(),
+            buf.len() as f64 / 1024.0,
         );
     }
 
-    // Save.
-    if let Err(e) = save_scene_file(out_path, &desc) {
+    // Save JSON + BIN.
+    if let Err(e) = save_scene_file(out_path, &mut desc, &buf) {
         eprintln!("error: {e}");
         process::exit(1);
     }
-    println!("Saved scene → '{}'", out_path.display());
+    let bin = bin_path_for(out_path);
+    println!(
+        "Saved scene → '{}' + '{}' ({:.1} KB)",
+        out_path.display(),
+        bin.display(),
+        buf.len() as f64 / 1024.0,
+    );
 }

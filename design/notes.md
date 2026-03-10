@@ -304,3 +304,41 @@ Implemented JSON-based scene serialization and deserialization in `src/scene_for
 - `Cargo.toml` — added `serde = { version = "1", features = ["derive"] }` and `serde_json = "1"`.
 - `src/lib.rs` — registered `scene_format` module.
 - `design/roadmap.md` — checked off scene serialization milestone.
+
+## 2026-03-09 - OBJ Importer CLI
+Added `bin/obj_importer.rs` — a CLI tool that imports OBJ files into a scene JSON file.
+
+**New file: `bin/obj_importer.rs`**
+- Accepts one or more `.obj` files and an `--output <SCENE.json>` path.
+- If the scene file exists, new meshes/materials/objects are **appended** to it.
+- If the scene file does not exist, a fresh `SceneDescription` with default camera is created.
+- `--overwrite` flag forces creation of a new scene even when the file already exists.
+- Proper MTL→MaterialDesc conversion (Lambertian / Conductor / Dielectric) using the same priority rules as `importer.rs`.
+
+**New in `src/scene_format.rs`**
+- `obj_import` sub-module with `import_obj_to_scene_desc()`: loads an OBJ file via `tobj`, converts MTL materials directly to `MaterialDesc` enums, and appends meshes + objects + materials to a mutable `SceneDescription`.
+- Re-exported as `scene_format::import_obj_to_scene_desc`.
+
+**Modified files:**
+- `Cargo.toml` — added `obj_importer` binary target.
+
+## 2026-03-09 - Binary-backed scene storage
+Replaced inline JSON mesh data with a companion `.bin` file for geometry buffers.  The fireplace room scene JSON dropped from ~90+ MB to ~38 KB; geometry lives in a 15 MB `.bin`.
+
+**Redesigned `src/scene_format.rs`**
+- `BinBuffer` — in-memory accumulator backed by a `Vec<u8>`.  Provides `append_f32s()` / `append_u32s()` that return a `BufferRef { offset, length }`, plus `read_f32s()` / `read_u32s()` for the inverse.  Supports `from_file()` to pre-load an existing `.bin` for append workflows.
+- `BufferRef` — serializable `{ offset, length }` byte range into the `.bin`.
+- `MeshDesc` now stores `BufferRef` fields (positions, normals, tex_coords, indices) instead of inline `Vec<f32>` / `Vec<u32>`.  `material_slots` remains inline (always small).
+- `MeshDesc::from_mesh()` takes `&mut BinBuffer`, writes geometry, returns refs.
+- `MeshDesc::build()` takes `&BinBuffer`, reads geometry back.
+- `SceneDescription` gained a `buffer_file: String` field (relative path to the `.bin`).
+- `SceneDescription::build_with_dir(scene_dir)` resolves the `.bin` relative to the JSON and loads it.
+- `save_scene_file()` now takes `&mut SceneDescription` + `&BinBuffer` and writes both the JSON and the `.bin`.
+- `load_bin_buffer()` — load the companion `.bin` for an existing scene (used by append workflow).
+- `bin_path_for()` — helper to derive `.bin` path from `.json` path.
+- `import_obj_to_scene_desc()` now takes `&mut BinBuffer` and writes geometry directly to it.
+
+**Updated `bin/obj_importer.rs`**
+- Now loads/creates both the JSON and the `BinBuffer`.
+- On append: pre-loads the existing `.bin` via `load_bin_buffer()`, new geometry is appended after the existing data.
+- Prints binary buffer size in output.
