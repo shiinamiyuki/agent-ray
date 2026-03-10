@@ -58,6 +58,9 @@ use crate::scene::{Scene, SceneObject};
 use crate::surfaces::{Bsdf, ConductorBsdf, DielectricBsdf, Lambertian};
 use crate::texture::ConstantTexture;
 
+// Re-export the helpers so the binary can use them.
+pub use self::obj_import::import_obj_to_scene_desc;
+
 // =========================================================================
 // Serializable descriptor types
 // =========================================================================
@@ -540,4 +543,129 @@ pub fn load_scene_file<P: AsRef<Path>>(path: P) -> Result<SceneDescription> {
 pub fn load_and_build_scene<P: AsRef<Path>>(path: P) -> Result<(Scene, PinholeCamera)> {
     let desc = load_scene_file(path)?;
     desc.build()
+}
+
+// =========================================================================
+// OBJ → SceneDescription import
+// =========================================================================
+
+mod obj_import {
+    use std::path::Path;
+
+    use anyhow::Result;
+
+    use super::{MaterialDesc, MeshDesc, ObjectDesc, SceneDescription};
+
+    // ---- roughness helper (mirrors importer.rs) --------------------------
+
+    fn ns_to_roughness(ns: f32) -> f32 {
+        (2.0 / (ns + 2.0)).sqrt().clamp(1e-3, 1.0)
+    }
+
+    fn luminance(c: [f32; 3]) -> f32 {
+        0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    }
+
+    // ---- MTL → MaterialDesc conversion -----------------------------------
+
+    fn convert_material_desc(mat: &tobj::Material) -> MaterialDesc {
+        let ks = mat.specular.unwrap_or([0.0, 0.0, 0.0]);
+        let ns = mat.shininess.unwrap_or(0.0).max(0.0);
+        let d = mat.dissolve.unwrap_or(1.0);
+        let ni = mat.optical_density.unwrap_or(1.5).max(1.0);
+        let roughness = ns_to_roughness(ns);
+
+        if d < 0.5 {
+            return MaterialDesc::Dielectric { eta: ni, roughness };
+        }
+
+        if luminance(ks) > 0.04 {
+            return MaterialDesc::Conductor {
+                f0: ks,
+                roughness,
+            };
+        }
+
+        let kd = mat.diffuse.unwrap_or([0.5, 0.5, 0.5]);
+        MaterialDesc::Lambertian { albedo: kd }
+    }
+
+    // ---- public API ------------------------------------------------------
+
+    /// Import one OBJ file into a [`SceneDescription`], appending meshes,
+    /// materials, and objects.
+    ///
+    /// `transform` is an optional column-major 4×4 matrix; `None` means
+    /// identity.
+    ///
+    /// The function mutates `desc` in-place so that it can be called
+    /// repeatedly to merge multiple OBJ files into a single scene.
+    pub fn import_obj_to_scene_desc(
+        desc: &mut SceneDescription,
+        obj_path: &Path,
+        transform: Option<[f32; 16]>,
+    ) -> Result<()> {
+        let (models, materials_result) =
+            tobj::load_obj(obj_path, &tobj::GPU_LOAD_OPTIONS)?;
+
+        // Convert MTL materials to MaterialDesc.
+        let mat_descs: Vec<MaterialDesc> = match materials_result {
+            Ok(mats) if !mats.is_empty() => {
+                mats.iter().map(|m| convert_material_desc(m)).collect()
+            }
+            _ => vec![MaterialDesc::Lambertian {
+                albedo: [0.5, 0.5, 0.5],
+            }],
+        };
+
+        // Record the starting indices in the global palette so we can offset
+        // per-mesh material ids correctly.
+        let mat_base = desc.materials.len();
+        desc.materials.extend(mat_descs.iter().cloned());
+
+        for model in &models {
+            let m = &model.mesh;
+
+            // ---- vertex data --------------------------------------------
+            let positions: Vec<f32> = m.positions.clone();
+
+            let normals = if !m.normals.is_empty() {
+                Some(m.normals.clone())
+            } else {
+                None
+            };
+
+            let tex_coords = if !m.texcoords.is_empty() {
+                Some(m.texcoords.clone())
+            } else {
+                None
+            };
+
+            let mat_id = m.material_id.unwrap_or(0) as u32;
+            let mat_id = mat_id.min(mat_descs.len().saturating_sub(1) as u32);
+            let material_slots = vec![mat_id];
+
+            let mesh_idx = desc.meshes.len();
+            desc.meshes.push(MeshDesc {
+                positions,
+                normals,
+                tex_coords,
+                indices: m.indices.clone(),
+                material_slots,
+            });
+
+            // Material indices: all materials from this OBJ file, offset
+            // by `mat_base`.
+            let material_indices: Vec<usize> =
+                (0..mat_descs.len()).map(|i| mat_base + i).collect();
+
+            desc.objects.push(ObjectDesc {
+                mesh_index: mesh_idx,
+                material_indices,
+                transform,
+            });
+        }
+
+        Ok(())
+    }
 }
